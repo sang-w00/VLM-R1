@@ -20,6 +20,14 @@ Specifically, for the task of Referring Expression Comprehension (REC), we train
 - 2025-02-17: We release the VLM-R1 REC [Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression) on Hugging Face Spaces.
 - 2025-02-15: We release the VLM-R1 repository and [GRPO](#grpo) training script.
 
+## ToDo
+- [x] Implement multi-node training.
+- [x] Implement LoRA Fine-tuning.
+- [ ] Support more Multimodal LLMs.
+- [ ] Release the VLM-R1 Math model.
+- [ ] Study cross task generalization.
+- [ ] Enhance VLM for other tasks [welcome issue]. 
+
 ## Setup
 
 ```bash
@@ -78,7 +86,8 @@ torchrun --nproc_per_node="8" \
     --num_train_epochs 2 \
     --run_name $RUN_NAME \
     --save_steps 100 \
-    --save_only_model true
+    --save_only_model true \
+    --freeze_vision_modules false # If you want to only finetune the language model, set this to true.
 ```
 
 ![image](./assets/iou.jpg)
