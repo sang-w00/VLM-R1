@@ -24,13 +24,15 @@ from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
 from math_verify import parse, verify
-from open_r1.trainer import Qwen2VLGRPOTrainer, GRPOConfig
+from open_r1.trainer import VLMGRPOTrainer, GRPOConfig
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 import PIL
 from Levenshtein import ratio
 from open_r1.utils.pycocotools.coco import COCO
 from open_r1.utils.pycocotools.cocoeval import COCOeval
 import json
+
+from open_r1.vlm_modules import *
 
 # ----------------------- Fix the flash attention bug in the current version of transformers -----------------------
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionFlashAttention2, apply_rotary_pos_emb_flashatt, flash_attn_varlen_func
@@ -501,7 +503,19 @@ SYSTEM_PROMPT = (
 )
 
 
+def get_vlm_module(model_name_or_path):
+    if "qwen" in model_name_or_path.lower():
+        return Qwen2VLModule
+    elif "internvl" in model_name_or_path.lower():
+        return InvernVLModule
+    else:
+        raise ValueError(f"Unsupported model: {model_name_or_path}")
+
 def main(script_args, training_args, model_args):
+    # Load the VLM module
+    vlm_module_cls = get_vlm_module(model_args.model_name_or_path)
+    print("using vlm module:", vlm_module_cls.__name__)
+
     # Get reward functions
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     print("reward_funcs:", reward_funcs)
@@ -594,7 +608,7 @@ def main(script_args, training_args, model_args):
         splits['validation'] = train_val_split['test']
 
     # Select trainer class based on vlm_trainer argument
-    trainer_cls = Qwen2VLGRPOTrainer
+    trainer_cls = VLMGRPOTrainer
     print("using trainer:", trainer_cls.__name__)
 
     # Initialize the GRPO trainer
@@ -602,6 +616,7 @@ def main(script_args, training_args, model_args):
         model=model_args.model_name_or_path,
         reward_funcs=reward_funcs,
         args=training_args,
+        vlm_module=vlm_module_cls(),
         train_dataset=splits['train'],
         eval_dataset=splits.get('validation') if training_args.eval_strategy != "no" else None,
         peft_config=get_peft_config(model_args),

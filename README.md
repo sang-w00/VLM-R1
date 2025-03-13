@@ -11,6 +11,7 @@ Since the introduction of [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-
 Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model is slightly lower than that of the R1 model (as shown at the top of the figure above). However, on the out-of-domain test data, the SFT model’s performance deteriorates significantly as the number of steps increases, while the R1 model shows a steady improvement (as shown at the bottom of the figure above).
 
 ## Update
+- 2025-03-13: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
 - 2025-03-02: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh) for details.
 - 2025-02-27: We support the `number of iterations per batch` and `epsilon value for clipping` in the original GRPO algorithm with args: `--num_iterations` and `--epsilon`.
 - 2025-02-25: We support multi-node training for GRPO. See [multinode_training_demo.sh](src/open-r1-multimodal/run_scripts/multinode_training_demo.sh) for details.
@@ -23,7 +24,8 @@ Specifically, for the task of Referring Expression Comprehension (REC), we train
 ## ToDo
 - [x] Implement multi-node training.
 - [x] Implement LoRA Fine-tuning.
-- [ ] Support more Multimodal LLMs.
+- [x] Support more Multimodal LLMs.
+- [ ] Support multi-image input.
 - [ ] Release the VLM-R1 Math model.
 - [ ] Study cross task generalization.
 - [ ] Enhance VLM for other tasks [welcome issue]. 

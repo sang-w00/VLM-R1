@@ -32,7 +32,8 @@ from torch.utils.data import Dataset
 from transformers import Qwen2VLForConditionalGeneration
 
 from math_verify import parse, verify
-from open_r1.trainer import Qwen2VLGRPOTrainer, GRPOConfig
+from open_r1.trainer import VLMGRPOTrainer, GRPOConfig
+from open_r1.vlm_modules import *
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 from transformers import TrainingArguments
 import yaml
@@ -100,11 +101,15 @@ class GRPOScriptArguments(ScriptArguments):
     )
     max_pixels: Optional[int] = field(
         default=12845056,
-        metadata={"help": "Maximum number of pixels for the image"},
+        metadata={"help": "Maximum number of pixels for the image (for QwenVL)"},
     )
     min_pixels: Optional[int] = field(
         default=3136,
-        metadata={"help": "Minimum number of pixels for the image"},
+        metadata={"help": "Minimum number of pixels for the image (for QwenVL)"},
+    )
+    max_anyres_num: Optional[int] = field(
+        default=12,
+        metadata={"help": "Maximum number of anyres blocks for the image (for InternVL)"},
     )
     image_root: Optional[str] = field(
         default=None,
@@ -124,10 +129,11 @@ SYSTEM_PROMPT = (
 )
 
 class LazySupervisedDataset(Dataset):
-    def __init__(self, data_path: str, script_args: GRPOScriptArguments):
+    def __init__(self, data_path: str, script_args: GRPOScriptArguments, question_template: str):
         super(LazySupervisedDataset, self).__init__()
         self.script_args = script_args
         self.list_data_dict = []
+        self.question_template = question_template
 
         if data_path.endswith(".yaml"):
             with open(data_path, "r") as file:
@@ -190,9 +196,7 @@ class LazySupervisedDataset(Dataset):
                     {"role": "user", "content": example["problem"]},
                 ],
             }
-        # FIXME
-        # This is only for Grounding task
-        QUESTION_TEMPLATE = "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. Output the final answer in JSON format."
+        QUESTION_TEMPLATE = self.question_template
         def make_conversation_image(example):
             return {
                 "prompt": [
@@ -229,82 +233,38 @@ class LazySupervisedDataset(Dataset):
             'prompt': make_conversation_image(example)['prompt'] if 'image' in example else make_conversation(example)['prompt'],
         }
 
-'''
-    If the iou of the bbox predicted by the model and the ground truth is greater than 0.5, the reward is 1.0, otherwise 0.0 .
-    This is a hard reward, maybe the soft reward is better and could be used in the future .
-'''
-def iou_reward(completions, solution, **kwargs):
-    def iou(box1, box2):
-        inter_x1 = max(box1[0], box2[0])
-        inter_y1 = max(box1[1], box2[1])
-        inter_x2 = min(box1[2]-1, box2[2]-1)
-        inter_y2 = min(box1[3]-1, box2[3]-1)
-        if inter_x1 < inter_x2 and inter_y1 < inter_y2:
-            inter = (inter_x2-inter_x1+1)*(inter_y2-inter_y1+1)
-        else:
-            inter = 0
-        union = (box1[2]-box1[0])*(box1[3]-box1[1]) + (box2[2]-box2[0])*(box2[3]-box2[1]) - inter
-        return float(inter)/union
-    contents = [completion[0]["content"] for completion in completions]
-    rewards = []
-    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    answer_tag_pattern = r'<answer>(.*?)</answer>'
-    # bbox_pattern = r'\[(\s*-?\d*\.?\d+\s*),\s*(\s*-?\d*\.?\d+\s*),\s*(\s*-?\d*\.?\d+\s*),\s*(\s*-?\d*\.?\d+\s*)\]'
-    bbox_pattern = r'\[(\d+),\s*(\d+),\s*(\d+),\s*(\d+)]'
-    for content, sol in zip(contents, solution):
-        reward = 0.0
-        # Try symbolic verification first
-        try:
-            content_answer_match = re.search(answer_tag_pattern, content, re.DOTALL)
-            if content_answer_match:
-                content_answer = content_answer_match.group(1).strip()
-                bbox_match = re.search(bbox_pattern, content_answer)
-                if bbox_match:
-                    bbox = [int(bbox_match.group(1)), int(bbox_match.group(2)), int(bbox_match.group(3)), int(bbox_match.group(4))]
-                    if iou(bbox, sol) > 0.5:
-                        reward = 1.0
-        except Exception:
-            pass  # Continue to next verification method if this fails
-                
-        rewards.append(reward)
-        if os.getenv("DEBUG_MODE") == "true":
-            log_path = os.getenv("LOG_PATH")
-            # local_rank = int(os.getenv("LOCAL_RANK", 0))
-            with open(log_path, "a", encoding='utf-8') as f:
-                f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
-                f.write(f"Content: {content}\n")
-                f.write(f"Solution: {sol}\n")
-    return rewards
 
-
-def format_reward(completions, **kwargs):
-    """Reward function that checks if the completion has a specific format."""
-    # pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
-    pattern = r"<think>.*?</think>\s*<answer>.*?\{.*\[\d+,\s*\d+,\s*\d+,\s*\d+\].*\}.*?</answer>"
-    completion_contents = [completion[0]["content"] for completion in completions]
-    matches = [re.fullmatch(pattern, content, re.DOTALL) for content in completion_contents]
-    return [1.0 if match else 0.0 for match in matches]
-
-
-reward_funcs_registry = {
-    "accuracy": iou_reward,
-    "format": format_reward,
-}
-
+def get_vlm_module(model_name_or_path):
+    if "qwen" in model_name_or_path.lower():
+        return Qwen2VLModule
+    elif "internvl" in model_name_or_path.lower():
+        return InvernVLModule
+    else:
+        raise ValueError(f"Unsupported model: {model_name_or_path}")
 
 def main(script_args, training_args, model_args):
+    # Load the VLM module
+    vlm_module_cls = get_vlm_module(model_args.model_name_or_path)
+    print("using vlm module:", vlm_module_cls.__name__)
+
+    # Load the reward functions
+    reward_funcs_registry = {
+        "accuracy": vlm_module_cls.iou_reward,
+        "format": vlm_module_cls.format_reward_rec,
+    }
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     print("reward_funcs:", reward_funcs)
 
     # Load the dataset
-    dataset = LazySupervisedDataset(script_args.dataset_name, script_args)
+    dataset = LazySupervisedDataset(script_args.dataset_name, script_args, question_template=vlm_module_cls.get_question_template(task_type="rec"))
 
-    trainer_cls = Qwen2VLGRPOTrainer
+    trainer_cls = VLMGRPOTrainer
     # Initialize the GRPO trainer
     trainer = trainer_cls(
         model=model_args.model_name_or_path,
         reward_funcs=reward_funcs,
         args=training_args,
+        vlm_module=vlm_module_cls(),
         train_dataset=dataset,
         eval_dataset=None,
         peft_config=get_peft_config(model_args),
@@ -312,6 +272,7 @@ def main(script_args, training_args, model_args):
         attn_implementation=model_args.attn_implementation,
         max_pixels=script_args.max_pixels,
         min_pixels=script_args.min_pixels,
+        max_anyres_num=script_args.max_anyres_num,
         torch_dtype=model_args.torch_dtype,
     )
 
