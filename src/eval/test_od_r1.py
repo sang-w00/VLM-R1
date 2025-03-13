@@ -148,8 +148,8 @@ def eval_od_r1(
         print(f"\nAccuracy of {ds}: {accuracy:.2f}%")
 
         # Save results to a JSON file
-        os.makedirs(output_dir, exist_ok=True)
-        result_path = os.path.join(output_dir, f"{os.path.basename(model_path)}_{'_'.join(test_datasets)}_od_r1.json")
+        result_path = os.path.join(output_dir, f"{os.path.basename(model_path)}", f"{ds}_od_r1.json")
+        os.makedirs(os.path.dirname(result_path), exist_ok=True)
         with open(result_path, "w") as f:
             json.dump({"accuracy": accuracy, "results": final_output}, f, indent=2)
 
@@ -160,7 +160,7 @@ def eval_od_r1(
 if __name__ == "__main__":
     model_path = ''  # Add the path to the model
     data_root = ''  # Add the data root
-    test_datasets = ['refcoco_val_v0.0', 'refcocop_val_v0.0', 'refcocog_val_v0.0']  # modify the datasets
+    test_datasets = ['refcoco_val', 'refcocop_val', 'refcocog_val']  # modify the datasets
     image_root = ''  # Add the image root
     output_dir = 'logs'  # Add the output directory, default is logs
     device_map = 'cuda:0'  # select the device, default is cuda:0
