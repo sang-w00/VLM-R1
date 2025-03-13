@@ -56,7 +56,7 @@ datasets:
     - json_path: /path/to/refcocog_train.json
 ```
 
-> 4. ```bash src/open-r1-multimodal/run_scripts/run_grpo_rec.sh```
+4. ```bash src/open-r1-multimodal/run_scripts/run_grpo_rec.sh```
 
 > [!NOTE] 
 > If you encounter 'CUDA out of memory' error, you can try to (1) set `gradient_checkpointing` as `true`, (2) reduce the `per_device_train_batch_size`, or (3) use lora.
