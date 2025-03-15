@@ -5,7 +5,7 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 from torchvision.transforms.functional import InterpolationMode
-
+from transformers.feature_extraction_sequence_utils import BatchFeature
 
 IMG_START_TOKEN='<img>'
 IMG_END_TOKEN='</img>'
@@ -97,14 +97,17 @@ class InvernVLModule(VLMBaseModule):
             num_patches_list.append(pixel_values.shape[0])
         full_pixel_values = torch.cat(full_pixel_values, dim=0)
         
-
         # Process prompts
         queries = []
-        for idx, query in enumerate(prompts_text):
-            num_patches = num_patches_list[idx]
-            image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * num_patches + IMG_END_TOKEN
-            query = query.replace('<image>', image_tokens, 1)
+        image_idx = 0
+        for query in prompts_text:
+            while "<image>" in query:
+                num_patches = num_patches_list[image_idx]
+                image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * num_patches + IMG_END_TOKEN
+                query = query.replace("<image>", image_tokens, 1)
+                image_idx += 1
             queries.append(query)
+        assert image_idx == len(num_patches_list)
         
         model_inputs = processing_class(
             queries,
@@ -116,6 +119,8 @@ class InvernVLModule(VLMBaseModule):
         model_inputs["pixel_values"] = full_pixel_values
         # Only support pure-image data currently (each sample should contain the image)
         model_inputs['image_flags'] = torch.ones(full_pixel_values.shape[0], dtype=torch.long)
+        
+        model_inputs = BatchFeature(data=model_inputs)
         return model_inputs
 
     def _load_image(self, image: Image.Image, input_size: int=448, max_num:int=12):

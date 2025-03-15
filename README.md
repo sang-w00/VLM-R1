@@ -11,6 +11,7 @@ Since the introduction of [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-
 Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model is slightly lower than that of the R1 model (as shown at the top of the figure above). However, on the out-of-domain test data, the SFT model’s performance deteriorates significantly as the number of steps increases, while the R1 model shows a steady improvement (as shown at the bottom of the figure above).
 
 ## 🗞️ Update
+- **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data).
 - **`2025-03-13`**: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
 - **`2025-03-02`**: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh) for details.
 - **`2025-02-27`**: We support the `number of iterations per batch` and `epsilon value for clipping` in the original GRPO algorithm with args: `--num_iterations` and `--epsilon`.
@@ -25,7 +26,7 @@ Specifically, for the task of Referring Expression Comprehension (REC), we train
 - [x] Implement multi-node training.
 - [x] Implement LoRA Fine-tuning.
 - [x] Support more Multimodal LLMs.
-- [ ] Support multi-image input.
+- [x] Support multi-image input.
 - [ ] Release the VLM-R1 Math model.
 - [ ] Study cross task generalization.
 - [ ] Enhance VLM for other tasks [welcome issue]. 
@@ -120,7 +121,25 @@ We also support data loading the jsonl data of this format in [`src/open-r1-mult
 
 The jsonl has the format as follows:
 ```json
-{"id": 1, "image": "Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16885.png", "conversations": [{"from": "human", "value": "<image>What number of purple metallic balls are there?"}, {"from": "gpt", "value": "0"}]}
+{
+  "id": 1,
+  "image": "Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16885.png",
+  "conversations": [
+    {"from": "human", "value": "<image>What number of purple metallic balls are there?"},
+    {"from": "gpt", "value": "0"}
+  ]
+}
+```
+If you want to use multi-image input, you can use the following format:
+```json
+{
+  "id": 1,
+  "image": ["Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16885.png", "Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16886.png"],
+  "conversations": [
+    {"from": "human", "value": "<image><image>What number of purple metallic balls in total in the two images?"},
+    {"from": "gpt", "value": "3"}
+  ]
+}
 ```
 
 Note: The image path in the jsonl file should be relative to the image folder specified in `--image_folders`. The absolute path of the input image is constructed as `os.path.join(image_folder, data['image'])`. For example:

@@ -79,6 +79,12 @@ class Qwen2VLModule(VLMBaseModule):
         completion_contents = [completion[0]["content"] for completion in completions]
         matches = [re.search(pattern, content, re.DOTALL) is not None for content in completion_contents]
         return [1.0 if match else 0.0 for match in matches]
+    
+    def format_reward(completions, **kwargs):
+        pattern = r"<think>.*?</think>\s*<answer>.*?\[.*?{\"bbox_2d\":\s*\[\s*\d+,\s*\d+,\s*\d+,\s*\d+\s*\]\s*,\s*\"label\":\s*\".*?\"\s*}.*?\].*?</answer>"
+        completion_contents = [completion[0]["content"] for completion in completions]
+        matches = [re.search(pattern, content, re.DOTALL) is not None for content in completion_contents]
+        return [1.0 if match else 0.0 for match in matches]
         
     @staticmethod
     def iou_reward(completions, solution, **kwargs):

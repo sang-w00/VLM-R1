@@ -114,18 +114,15 @@ class GRPOScriptArguments(ScriptArguments):
     )
     max_pixels: Optional[int] = field(
         default=12845056,
-        metadata={"help": "Maximum number of pixels for the image"},
+        metadata={"help": "Maximum number of pixels for the image (for QwenVL)"},
     )
     min_pixels: Optional[int] = field(
         default=3136,
-        metadata={"help": "Minimum number of pixels for the image"},
+        metadata={"help": "Minimum number of pixels for the image (for QwenVL)"},
     )
-    vlm_trainer: Optional[str] = field(
-        default="default",
-        metadata={
-            "help": "Choose VLM trainer type: 'default', 'modified', 'modified_bf16', or 'modified_optimized_bf16'",
-            "choices": ["default", "modified", "modified_bf16", "modified_optimized_bf16"]
-        },
+    max_anyres_num: Optional[int] = field(
+        default=12,
+        metadata={"help": "Maximum number of anyres blocks for the image (for InternVL)"},
     )
     reward_method: Optional[str] = field(
         default=None,
@@ -515,6 +512,7 @@ def main(script_args, training_args, model_args):
     # Load the VLM module
     vlm_module_cls = get_vlm_module(model_args.model_name_or_path)
     print("using vlm module:", vlm_module_cls.__name__)
+    question_prompt = vlm_module_cls.get_question_template(task_type="default")
 
     # Get reward functions
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
@@ -546,9 +544,16 @@ def main(script_args, training_args, model_args):
             for line in f:
                 item = json.loads(line)
                 if 'image' in item:
-                    # Store image path instead of loading the image
-                    item['image_path'] = os.path.join(image_folder, item['image'])
-                    del item['image'] # remove the image column so that it can be loaded later
+                    if isinstance(item['image'], str):
+                        # Store image path instead of loading the image
+                        item['image_path'] = [os.path.join(image_folder, item['image'])]
+                        del item['image'] # remove the image column so that it can be loaded later
+                    elif isinstance(item['image'], list):
+                        # if the image is a list, then it is a list of images (for multi-image input)
+                        item['image_path'] = [os.path.join(image_folder, image) for image in item['image']]
+                        del item['image'] # remove the image column so that it can be loaded later
+                    else:
+                        raise ValueError(f"Unsupported image type: {type(item['image'])}")
                 # Remove immediate image loading
                 item['problem'] = item['conversations'][0]['value'].replace('<image>', '')
                 
@@ -570,15 +575,15 @@ def main(script_args, training_args, model_args):
         if 'image_path' in example and example['image_path'] is not None:
             # Don't load image here, just store the path
             return {
-                'image_path': example['image_path'],  # Store path instead of loaded image
+                'image_path': [p for p in example['image_path']],  # Store path instead of loaded image
                 'problem': example['problem'],
                 'solution': f"<answer> {example['solution']} </answer>",
                 'accu_reward_method': example['accu_reward_method'],
                 'prompt': [{
                     'role': 'user',
                     'content': [
-                        {'type': 'image', 'text': None},
-                        {'type': 'text', 'text': example['problem'] +  '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
+                        *({'type': 'image', 'text': None} for _ in range(len(example['image_path']))),
+                        {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
                     ]
                 }]
             }
@@ -590,7 +595,7 @@ def main(script_args, training_args, model_args):
                 'prompt': [{
                     'role': 'user',
                     'content': [
-                        {'type': 'text', 'text': example['problem'] + '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
+                        {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
                     ]
                 }]
             }
