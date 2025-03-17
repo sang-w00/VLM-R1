@@ -31,7 +31,7 @@ from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
 from math_verify import parse, verify
-from open_r1.trainer import Qwen2VLGRPOTrainer
+from open_r1.trainer import VLMGRPOTrainer
 from trl import GRPOConfig, GRPOTrainer, ModelConfig, ScriptArguments, TrlParser, get_peft_config
 
 
@@ -182,7 +182,7 @@ def main(script_args, training_args, model_args):
         dataset = dataset.remove_columns("messages")
 
     
-    trainer_cls = Qwen2VLGRPOTrainer
+    trainer_cls = VLMGRPOTrainer
 
 
     # Initialize the GRPO trainer

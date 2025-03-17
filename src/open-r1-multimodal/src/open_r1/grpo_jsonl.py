@@ -24,13 +24,15 @@ from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
 from math_verify import parse, verify
-from open_r1.trainer import Qwen2VLGRPOTrainer, GRPOConfig
+from open_r1.trainer import VLMGRPOTrainer, GRPOConfig
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 import PIL
 from Levenshtein import ratio
 from open_r1.utils.pycocotools.coco import COCO
 from open_r1.utils.pycocotools.cocoeval import COCOeval
 import json
+
+from open_r1.vlm_modules import *
 
 # ----------------------- Fix the flash attention bug in the current version of transformers -----------------------
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionFlashAttention2, apply_rotary_pos_emb_flashatt, flash_attn_varlen_func
@@ -112,18 +114,15 @@ class GRPOScriptArguments(ScriptArguments):
     )
     max_pixels: Optional[int] = field(
         default=12845056,
-        metadata={"help": "Maximum number of pixels for the image"},
+        metadata={"help": "Maximum number of pixels for the image (for QwenVL)"},
     )
     min_pixels: Optional[int] = field(
         default=3136,
-        metadata={"help": "Minimum number of pixels for the image"},
+        metadata={"help": "Minimum number of pixels for the image (for QwenVL)"},
     )
-    vlm_trainer: Optional[str] = field(
-        default="default",
-        metadata={
-            "help": "Choose VLM trainer type: 'default', 'modified', 'modified_bf16', or 'modified_optimized_bf16'",
-            "choices": ["default", "modified", "modified_bf16", "modified_optimized_bf16"]
-        },
+    max_anyres_num: Optional[int] = field(
+        default=12,
+        metadata={"help": "Maximum number of anyres blocks for the image (for InternVL)"},
     )
     reward_method: Optional[str] = field(
         default=None,
@@ -501,7 +500,20 @@ SYSTEM_PROMPT = (
 )
 
 
+def get_vlm_module(model_name_or_path):
+    if "qwen" in model_name_or_path.lower():
+        return Qwen2VLModule
+    elif "internvl" in model_name_or_path.lower():
+        return InvernVLModule
+    else:
+        raise ValueError(f"Unsupported model: {model_name_or_path}")
+
 def main(script_args, training_args, model_args):
+    # Load the VLM module
+    vlm_module_cls = get_vlm_module(model_args.model_name_or_path)
+    print("using vlm module:", vlm_module_cls.__name__)
+    question_prompt = vlm_module_cls.get_question_template(task_type="default")
+
     # Get reward functions
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     print("reward_funcs:", reward_funcs)
@@ -532,9 +544,16 @@ def main(script_args, training_args, model_args):
             for line in f:
                 item = json.loads(line)
                 if 'image' in item:
-                    # Store image path instead of loading the image
-                    item['image_path'] = os.path.join(image_folder, item['image'])
-                    del item['image'] # remove the image column so that it can be loaded later
+                    if isinstance(item['image'], str):
+                        # Store image path instead of loading the image
+                        item['image_path'] = [os.path.join(image_folder, item['image'])]
+                        del item['image'] # remove the image column so that it can be loaded later
+                    elif isinstance(item['image'], list):
+                        # if the image is a list, then it is a list of images (for multi-image input)
+                        item['image_path'] = [os.path.join(image_folder, image) for image in item['image']]
+                        del item['image'] # remove the image column so that it can be loaded later
+                    else:
+                        raise ValueError(f"Unsupported image type: {type(item['image'])}")
                 # Remove immediate image loading
                 item['problem'] = item['conversations'][0]['value'].replace('<image>', '')
                 
@@ -556,15 +575,15 @@ def main(script_args, training_args, model_args):
         if 'image_path' in example and example['image_path'] is not None:
             # Don't load image here, just store the path
             return {
-                'image_path': example['image_path'],  # Store path instead of loaded image
+                'image_path': [p for p in example['image_path']],  # Store path instead of loaded image
                 'problem': example['problem'],
                 'solution': f"<answer> {example['solution']} </answer>",
                 'accu_reward_method': example['accu_reward_method'],
                 'prompt': [{
                     'role': 'user',
                     'content': [
-                        {'type': 'image', 'text': None},
-                        {'type': 'text', 'text': example['problem'] +  '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
+                        *({'type': 'image', 'text': None} for _ in range(len(example['image_path']))),
+                        {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
                     ]
                 }]
             }
@@ -576,7 +595,7 @@ def main(script_args, training_args, model_args):
                 'prompt': [{
                     'role': 'user',
                     'content': [
-                        {'type': 'text', 'text': example['problem'] + '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
+                        {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
                     ]
                 }]
             }
@@ -594,7 +613,7 @@ def main(script_args, training_args, model_args):
         splits['validation'] = train_val_split['test']
 
     # Select trainer class based on vlm_trainer argument
-    trainer_cls = Qwen2VLGRPOTrainer
+    trainer_cls = VLMGRPOTrainer
     print("using trainer:", trainer_cls.__name__)
 
     # Initialize the GRPO trainer
@@ -602,6 +621,7 @@ def main(script_args, training_args, model_args):
         model=model_args.model_name_or_path,
         reward_funcs=reward_funcs,
         args=training_args,
+        vlm_module=vlm_module_cls(),
         train_dataset=splits['train'],
         eval_dataset=splits.get('validation') if training_args.eval_strategy != "no" else None,
         peft_config=get_peft_config(model_args),

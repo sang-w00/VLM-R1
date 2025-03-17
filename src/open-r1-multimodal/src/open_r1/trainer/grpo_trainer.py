@@ -45,6 +45,7 @@ from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_c
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import generate_model_card, get_comet_experiment_url
+from trl import GRPOTrainer
 
 from accelerate.utils import is_peft_model, set_seed
 import PIL.Image
@@ -59,6 +60,7 @@ if is_peft_available():
 if is_wandb_available():
     import wandb
 
+from open_r1.vlm_modules.vlm_module import VLMBaseModule
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
@@ -114,7 +116,7 @@ class RepeatRandomSampler(Sampler):
         return self.num_samples * self.mini_repeat_count * self.repeat_count
 
 
-class Qwen2VLGRPOTrainer(Trainer):
+class VLMGRPOTrainer(Trainer):
     """
     Trainer for the Group Relative Policy Optimization (GRPO) method. This algorithm was initially proposed in the
     paper [DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models](https://huggingface.co/papers/2402.03300).
@@ -203,6 +205,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         model: Union[str, PreTrainedModel],
         reward_funcs: Union[RewardFunc, list[RewardFunc]],
         args: GRPOConfig = None,
+        vlm_module: VLMBaseModule = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]] = None,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
@@ -211,58 +214,51 @@ class Qwen2VLGRPOTrainer(Trainer):
         optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
         peft_config: Optional["PeftConfig"] = None,
         freeze_vision_modules: Optional[bool] = False,
-        max_pixels: Optional[int] = 12845056,
-        min_pixels: Optional[int] = 3136,
         attn_implementation: str = "flash_attention_2",
         torch_dtype: str = "bfloat16",
+        **kwargs,
     ):
         # Args
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
             model_name = model_name.split("/")[-1]
             args = GRPOConfig(f"{model_name}-GRPO")
+        
+        self.vlm_module = vlm_module
 
         # Models
         # Trained model
         model_init_kwargs = args.model_init_kwargs or {}
+        # FIXME
+        # Remember to modify it in the invernvl
         model_init_kwargs["attn_implementation"] = attn_implementation
         if model_init_kwargs.get("torch_dtype") is None:
             model_init_kwargs["torch_dtype"] = torch_dtype
-        if isinstance(model, str):
-            model_id = model
-            torch_dtype = model_init_kwargs.get("torch_dtype")
-            if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
-                pass  # torch_dtype is already a torch.dtype or "auto" or None
-            elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
-                torch_dtype = getattr(torch, torch_dtype)
-                model_init_kwargs["torch_dtype"] = torch_dtype
-            else:
-                raise ValueError(
-                    "Invalid `torch_dtype` passed to `GRPOConfig`. Expected either 'auto' or a string representing "
-                    f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
-                )
-            # Disable caching if gradient checkpointing is enabled (not supported)
-            model_init_kwargs["use_cache"] = (
-                False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
-            )
-            if "Qwen2-VL" in model_id:
-                model = Qwen2VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            elif "Aria" in model_id:
-                model_init_kwargs.pop("use_cache")
-                model = AriaForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            else:
-                model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
+        
+        assert isinstance(model, str), "model must be a string in the current implementation"
+        model_id = model
+        torch_dtype = model_init_kwargs.get("torch_dtype")
+        if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
+            pass  # torch_dtype is already a torch.dtype or "auto" or None
+        elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
+            torch_dtype = getattr(torch, torch_dtype)
         else:
-            model_id = model.config._name_or_path
-            if args.model_init_kwargs is not None:
-                raise ValueError(
-                    "You passed `model_init_kwargs` to the `GRPOConfig`, but your model is already instantiated. "
-                    "This argument can only be used when the `model` argument is a string."
-                )
+            raise ValueError(
+                "Invalid `torch_dtype` passed to `GRPOConfig`. Expected either 'auto' or a string representing "
+                f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
+            )
+        model_init_kwargs["use_cache"] = (
+            False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
+        )
+            # Disable caching if gradient checkpointing is enabled (not supported)
+        model_init_kwargs["use_cache"] = (
+            False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
+        )
+        model_cls = self.vlm_module.get_model_class(model_id, model_init_kwargs)
+        model = model_cls.from_pretrained(model_id, **model_init_kwargs)
 
-        self.vision_modules_keywords = ["visual"]
+        # LoRA
+        self.vision_modules_keywords = self.vlm_module.get_vision_modules_keywords()
         if peft_config is not None:
             def find_all_linear_names(model, multimodal_keywords):
                 cls = torch.nn.Linear
@@ -281,6 +277,7 @@ class Qwen2VLGRPOTrainer(Trainer):
             peft_config.target_modules = target_modules
             model = get_peft_model(model, peft_config)
 
+        # Freeze vision modules
         if freeze_vision_modules:
             print("Freezing vision modules...")
             for n, p in model.named_parameters():
@@ -293,14 +290,7 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Reference model
         if is_deepspeed_zero3_enabled():
-            if "Qwen2-VL" in model_id:
-                self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
-                self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            elif "Aria" in model_id:
-                self.ref_model = AriaForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            else:
-                self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
+            self.ref_model = model_cls.from_pretrained(model_id, **model_init_kwargs)
         elif peft_config is None:
             # If PEFT configuration is not provided, create a reference model based on the initial model.
             self.ref_model = create_reference_model(model)
@@ -311,17 +301,21 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Processing class
         if processing_class is None:
-            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id or "Aria" in model_id:
-                processing_class = AutoProcessor.from_pretrained(model_id)
+            processing_cls = self.vlm_module.get_processing_class()
+            processing_class = processing_cls.from_pretrained(model_id, trust_remote_code=model_init_kwargs.get("trust_remote_code", None))
+            for processing_keyword in self.vlm_module.get_custom_processing_keywords():
+                if processing_keyword in kwargs:
+                    setattr(processing_class, processing_keyword, kwargs[processing_keyword])
+            if getattr(processing_class, "tokenizer",  None) is not None:
                 pad_token_id = processing_class.tokenizer.pad_token_id
                 processing_class.pad_token_id = pad_token_id
                 processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
-                if "Qwen" in model_id or "Qwen2.5-VL" in model_id:
-                    processing_class.image_processor.max_pixels = max_pixels
-                    processing_class.image_processor.min_pixels = min_pixels
             else:
-                processing_class = AutoTokenizer.from_pretrained(model.config._name_or_path, padding_side="left")
+                assert isinstance(processing_class, PreTrainedTokenizerBase), "processing_class must be an instance of PreTrainedTokenizerBase if it has no tokenizer attribute"
                 pad_token_id = processing_class.pad_token_id
+
+        self.vlm_module.post_model_init(model, processing_class)
+        self.vlm_module.post_model_init(self.ref_model, processing_class)
 
         # Reward functions
         if not isinstance(reward_funcs, list):
@@ -372,6 +366,9 @@ class Qwen2VLGRPOTrainer(Trainer):
             temperature=1,
             pad_token_id=pad_token_id,
         )
+        if hasattr(self.vlm_module, "get_eos_token_id"): # For InternVL
+            self.generation_config.eos_token_id = self.vlm_module.get_eos_token_id(processing_class)
+            print(222, self.vlm_module.get_eos_token_id(processing_class))
         self.beta = args.beta
         self.epsilon = args.epsilon
 
@@ -454,7 +451,16 @@ class Qwen2VLGRPOTrainer(Trainer):
             model.base_model.gradient_checkpointing_enable()
         # Enable gradient checkpointing for non-PEFT models
         else:
-            model.gradient_checkpointing_enable()
+            try:
+                model.gradient_checkpointing_enable()
+            except:
+                # For InternVL; these operations are copied from the original training script of InternVL
+                model.language_model.config.use_cache = False
+                model.vision_model.gradient_checkpointing = True
+                model.vision_model.encoder.gradient_checkpointing = True
+                model.language_model._set_gradient_checkpointing()
+                # This line is necessary, otherwise the `model.gradient_checkpointing_enable()` will be executed during the training process, leading to an error since InternVL does not support this operation.
+                args.gradient_checkpointing = False
 
         gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
         use_reentrant = (
@@ -476,8 +482,8 @@ class Qwen2VLGRPOTrainer(Trainer):
 
 
     # Get the per-token log probabilities for the completions for the model and the reference model
-    def _get_per_token_logps(self, model, input_ids, attention_mask, pixel_values, image_grid_thw):
-        logits = model(input_ids, attention_mask=attention_mask, pixel_values=pixel_values, image_grid_thw=image_grid_thw).logits  # (B, L, V)
+    def _get_per_token_logps(self, model, input_ids, attention_mask, **custom_multimodal_inputs):
+        logits = model(input_ids=input_ids, attention_mask=attention_mask, **custom_multimodal_inputs).logits  # (B, L, V)
         logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
         input_ids = input_ids[:, 1:]  # (B, L-1), exclude the first input ID since we don't have logits for it
         # Compute the log probabilities for the input tokens. Use a loop to reduce memory peak.
@@ -493,63 +499,59 @@ class Qwen2VLGRPOTrainer(Trainer):
         # Simple pass-through, just like original
         return inputs
 
+    def _get_key_from_inputs(self, x, key):
+        ele = x.get(key, None)
+        assert ele is not None, f"The key {key} is not found in the input"
+        if isinstance(ele, list):
+            return [e for e in ele]
+        else:
+            return [ele]
+
     def _generate_and_score_completions(self, inputs: dict[str, Union[torch.Tensor, Any]], model) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         prompts = [x["prompt"] for x in inputs]
-        prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+        prompts_text = self.vlm_module.prepare_prompt(self.processing_class, inputs)
         # Handle both pre-loaded images and image paths
         images = []
         for x in inputs:
             if "image" in x:
-                img = x["image"]
+                imgs = self._get_key_from_inputs(x, "image")
             elif "image_path" in x and x["image_path"] is not None:
-                img = PIL.Image.open(x["image_path"])
+                imgs = [PIL.Image.open(p) for p in self._get_key_from_inputs(x, "image_path")]
 
-            try:
-                # Ensure minimum dimensions of 28 pixels
-                w, h = img.size
-                if w < 28 or h < 28:
+            for img in imgs:
+                try:
+                    # Ensure minimum dimensions of 28 pixels
+                    w, h = img.size
+                    if w < 28 or h < 28:
                     # Calculate new dimensions maintaining aspect ratio
-                    if w < h:
-                        new_w = 28
-                        new_h = int(h * (28/w))
-                    else:
-                        new_h = 28
-                        new_w = int(w * (28/h))
+                        if w < h:
+                            new_w = 28
+                            new_h = int(h * (28/w))
+                        else:
+                            new_h = 28
+                            new_w = int(w * (28/h))
                     img = img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
-            
+                except:
+                    pass
                 images.append(img)
-            except:
-                pass
+                
 
-        if len(images) > 0:
-            prompt_inputs = self.processing_class(
-                text=prompts_text,
-                images=images,
-                return_tensors="pt",
-                padding=True,
-                padding_side="left",
-                add_special_tokens=False,
-            )
-        else:
-            prompt_inputs = self.processing_class(
-                text=prompts_text,
-                return_tensors="pt",
-                padding=True,
-                padding_side="left",
-                add_special_tokens=False,
-            )
+        prompt_inputs = self.vlm_module.prepare_model_inputs(
+            self.processing_class,
+            prompts_text,
+            images,
+            return_tensors="pt",
+            padding=True,
+            padding_side="left",
+            add_special_tokens=False,
+        )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
 
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-        if len(images) > 0:
-            pixel_values = prompt_inputs["pixel_values"]
-            image_grid_thw = prompt_inputs["image_grid_thw"]
-        else:
-            pixel_values = None
-            image_grid_thw = None
 
-        
+
+        # max_prompt_length is not supported yet
         # if self.max_prompt_length is not None:
         #     prompt_ids = prompt_ids[:, -self.max_prompt_length :]
         #     prompt_inputs["input_ids"] = prompt_ids
@@ -558,15 +560,20 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
-            prompt_completion_ids = unwrapped_model.generate(
-                **prompt_inputs, 
+            generate_returned_result = unwrapped_model.generate(
+                **{k: v for k, v in prompt_inputs.items() if k not in self.vlm_module.get_non_generate_params()}, 
                 generation_config=self.generation_config
             )
-
             prompt_length = prompt_ids.size(1)
-            prompt_ids = prompt_completion_ids[:, :prompt_length]
-            completion_ids = prompt_completion_ids[:, prompt_length:]
-            # No need to repeat prompt_mask as we're not duplicating prompts during generation
+            if not self.vlm_module.is_embeds_input():
+                prompt_completion_ids = generate_returned_result
+                prompt_ids = prompt_completion_ids[:, :prompt_length]
+                completion_ids = prompt_completion_ids[:, prompt_length:]
+            else:
+                # In this case, the input of the LLM backbone is the embedding of the combination of the image and text prompt
+                # So the returned result of the `generate` method only contains the completion ids
+                completion_ids = generate_returned_result
+                prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
 
         # Mask everything after the first EOS token
         is_eos = completion_ids == self.processing_class.eos_token_id
@@ -577,19 +584,16 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
-        try:
-            pixel_values = prompt_inputs["pixel_values"]
-            image_grid_thw = prompt_inputs["image_grid_thw"]
-        except:
-            
-            pixel_values = None
-            image_grid_thw = None
+
+        # Get the multimodal inputs
+        multimodal_keywords = self.vlm_module.get_custom_multimodal_keywords()
+        multimodal_inputs = {k: prompt_inputs[k] if k in prompt_inputs else None for k in multimodal_keywords}
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its
             # computation here, and use per_token_logps.detach() instead.
             if self.num_iterations > 1:
                 old_per_token_logps = self._get_per_token_logps(
-                    model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw
+                    model, prompt_completion_ids, attention_mask, **multimodal_inputs
                 )
                 old_per_token_logps = old_per_token_logps[:, prompt_length - 1:]
             else:
@@ -599,12 +603,12 @@ class Qwen2VLGRPOTrainer(Trainer):
                 ref_per_token_logps = None
             elif self.ref_model is not None:
                 ref_per_token_logps = self._get_per_token_logps(
-                    self.ref_model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw
+                    self.ref_model, prompt_completion_ids, attention_mask, **multimodal_inputs
                 )
             else:
                 with self.accelerator.unwrap_model(model).disable_adapter():
                     ref_per_token_logps = self._get_per_token_logps(
-                        model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw
+                        model, prompt_completion_ids, attention_mask, **multimodal_inputs
                     )
         ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1:]
 
@@ -690,8 +694,7 @@ class Qwen2VLGRPOTrainer(Trainer):
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": ref_per_token_logps,
             "advantages": advantages,
-            "pixel_values": pixel_values,
-            "image_grid_thw": image_grid_thw
+            "multimodal_inputs": multimodal_inputs
         }
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -709,15 +712,14 @@ class Qwen2VLGRPOTrainer(Trainer):
         # Get the prepared inputs
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
-        pixel_values = inputs["pixel_values"]
-        image_grid_thw = inputs["image_grid_thw"]
+        multimodal_inputs = inputs["multimodal_inputs"]
         
         # Concatenate for full sequence
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
 
         # Get the current policy's log probabilities
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, pixel_values, image_grid_thw)
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, **multimodal_inputs)
         # Get rid of the prompt (-1 because of the shift done in get_per_token_logps)
         per_token_logps = per_token_logps[:, prompt_ids.size(1) - 1:]
 
