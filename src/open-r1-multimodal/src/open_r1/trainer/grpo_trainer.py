@@ -50,8 +50,6 @@ from trl import GRPOTrainer
 from accelerate.utils import is_peft_model, set_seed
 import PIL.Image
 
-from trl import GRPOTrainer
-
 import copy
 from torch.utils.data import Sampler
 import warnings
@@ -501,6 +499,14 @@ class VLMGRPOTrainer(Trainer):
         # Simple pass-through, just like original
         return inputs
 
+    def _get_key_from_inputs(self, x, key):
+        ele = x.get(key, None)
+        assert ele is not None, f"The key {key} is not found in the input"
+        if isinstance(ele, list):
+            return [e for e in ele]
+        else:
+            return [ele]
+
     def _generate_and_score_completions(self, inputs: dict[str, Union[torch.Tensor, Any]], model) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         prompts = [x["prompt"] for x in inputs]
@@ -509,26 +515,27 @@ class VLMGRPOTrainer(Trainer):
         images = []
         for x in inputs:
             if "image" in x:
-                img = x["image"]
+                imgs = self._get_key_from_inputs(x, "image")
             elif "image_path" in x and x["image_path"] is not None:
-                img = PIL.Image.open(x["image_path"])
+                imgs = [PIL.Image.open(p) for p in self._get_key_from_inputs(x, "image_path")]
 
-            try:
-                # Ensure minimum dimensions of 28 pixels
-                w, h = img.size
-                if w < 28 or h < 28:
+            for img in imgs:
+                try:
+                    # Ensure minimum dimensions of 28 pixels
+                    w, h = img.size
+                    if w < 28 or h < 28:
                     # Calculate new dimensions maintaining aspect ratio
-                    if w < h:
-                        new_w = 28
-                        new_h = int(h * (28/w))
-                    else:
-                        new_h = 28
-                        new_w = int(w * (28/h))
+                        if w < h:
+                            new_w = 28
+                            new_h = int(h * (28/w))
+                        else:
+                            new_h = 28
+                            new_w = int(w * (28/h))
                     img = img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
-            
+                except:
+                    pass
                 images.append(img)
-            except:
-                pass
+                
 
         prompt_inputs = self.vlm_module.prepare_model_inputs(
             self.processing_class,

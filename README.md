@@ -2,16 +2,20 @@
 
 <font size=4><div align='center' > [[🤗 Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression)] [[🤗 Data](https://huggingface.co/datasets/omlab/VLM-R1)] [[🤗 Checkpoint](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps)] </div></font>
 
-<div style="margin-left: 15%;">
+<div style="margin-left: 25%;">
 <img src="./assets/performance.png" width="600"/>
 </div>
+
+
+<div style="text-align: justify;">
 
 Since the introduction of [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-R1), numerous works have emerged focusing on reproducing and improving upon it. In this project, we propose VLM-R1, a stable and generalizable R1-style Large Vision-Language Model. 
 
 Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model is slightly lower than that of the R1 model (as shown at the top of the figure above). However, on the out-of-domain test data, the SFT model’s performance deteriorates significantly as the number of steps increases, while the R1 model shows a steady improvement (as shown at the bottom of the figure above).
+</div>
 
 ## 🗞️ Update
-- **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data).
+- **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data). We also provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh), see [here](#for-your-own-data) for details.
 - **`2025-03-13`**: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
 - **`2025-03-02`**: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh) for details.
 - **`2025-02-27`**: We support the `number of iterations per batch` and `epsilon value for clipping` in the original GRPO algorithm with args: `--num_iterations` and `--epsilon`.
@@ -117,7 +121,12 @@ llamafactory-cli train examples/train_full/qwen2_5_vl_full_sft.yaml
 ```
 
 ### For your own data
+
+<div style="text-align: justify;">
+
 We also support data loading the jsonl data of this format in [`src/open-r1-multimodal/src/open_r1/grpo_jsonl.py`](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py). Please note that you may need to use different reward functions for your specialized tasks. Welcome to PR to add your own reward functions or share any other interesting findings!
+
+</div>
 
 The jsonl has the format as follows:
 ```json
@@ -169,6 +178,16 @@ torchrun --nproc_per_node="8" \
     --image_folders /path/to/your/image/folder/ \ # can be multiple, separated by ":"
     ...
 ```
+
+<div style="text-align: justify;">
+
+We provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh). This task requires the model to analyze two GUI screenshots, taken before and after a user action, to determine if any UI interaction defects are present, which is from [GUI-Testing-Arena](https://huggingface.co/datasets/songjah/GTArena-UI-Defects). Download the [image](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/gui_multi-image.zip) and unzip it into the `/path/to/images/`. Then modify the `image_folders` parameter in the script and run it.
+```bash
+bash src/open-r1-multimodal/run_scripts/run_grpo_gui.sh
+```
+
+</div>
+
 ## 📊 Evaluation
 
 ![image](./assets/data.png)
@@ -192,7 +211,7 @@ We would like to express our sincere gratitude to [DeepSeek](https://github.com/
 If you find this project useful, welcome to cite us.
 ```bib
 @misc{shen2025vlmr1,
-  author       = {Shen, Haozhan and Zhang, Zilun and Zhang, Qianqian and Xu, Ruochen and Zhao, Tiancheng},
+  author       = {Shen, Haozhan and Zhang, Zilun and Zhao, Kangjia and Zhang, Qianqian and Xu, Ruochen and Zhao, Tiancheng},
   title        = {VLM-R1: A stable and generalizable R1-style Large Vision-Language Model},
   howpublished = {\url{https://github.com/om-ai-lab/VLM-R1}},
   note         = {Accessed: 2025-02-15},
