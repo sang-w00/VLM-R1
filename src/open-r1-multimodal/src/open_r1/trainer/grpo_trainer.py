@@ -847,4 +847,3 @@ class VLMGRPOTrainer(Trainer):
             mini_repeat_count=self.num_generations,
             seed=self.args.seed,
         )
-
