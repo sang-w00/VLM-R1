@@ -20,6 +20,18 @@ Specifically, for the task of Referring Expression Comprehension (REC), we train
 
 ![image](./assets/performance2.png)
 
+
+## 🚀 Features
+This repository supports:
+- **`Full Fine-tuning for GRPO`**: see [run_grpo_rec.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec.sh)
+- **`Freeze Vision Modules`**: set `freeze_vision_modules` as `true` in the script.
+- **`LoRA Fine-tuning for GRPO`**: see [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh)
+- **`Multi-node Training`**: see [multinode_training_demo.sh](src/open-r1-multimodal/run_scripts/multinode_training_demo.sh)
+- **`Multi-image Input Training`**: see [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh)
+- **`For your own data`**: see [here](#for-your-own-data)
+- **`Support various VLMs`**: see [How to add a new model](assets/add_new_model.md), now we support QwenVL and InternVL
+
+
 ## 🗞️ Update
 - **`2025-03-17`**: Our VLM-R1 Math model reaches the top of the Open-Compass Math Leaderboard (under 4B parameters). We have released the [checkpoint](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305).
 - **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data). We also provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh), see [here](#for-your-own-data) for details.
