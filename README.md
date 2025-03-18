@@ -1,20 +1,27 @@
 # VLM-R1: A stable and generalizable R1-style Large Vision-Language Model
 
-<font size=4><div align='center' > [[🤗 Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression)] [[🤗 Data](https://huggingface.co/datasets/omlab/VLM-R1)] [[🤗 Checkpoint](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps)] </div></font>
+<font size=4><div align='center' > [[🤗 Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression)] [[🤗 Data](https://huggingface.co/datasets/omlab/VLM-R1)] [[🤗 Checkpoint](https://huggingface.co/collections/omlab/vlm-r1-models-67b7352db15c19d57157c348)] </div></font>
 
-<div style="margin-left: 25%;">
-<img src="./assets/performance.png" width="600"/>
+
+<div align="center">
+<img src="./assets/math-leaderboard.jpg" width="900"/>
+<div>
+  <font size=4>
+    <p>🎉  <b>Our VLM-R1 Math model reaches the top of the Open-Compass Math Leaderboard (under 4B parameters).</b></p>
+  </font>
+</div>
 </div>
 
 
-<div style="text-align: justify;">
 
 Since the introduction of [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-R1), numerous works have emerged focusing on reproducing and improving upon it. In this project, we propose VLM-R1, a stable and generalizable R1-style Large Vision-Language Model. 
 
-Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model is slightly lower than that of the R1 model (as shown at the top of the figure above). However, on the out-of-domain test data, the SFT model’s performance deteriorates significantly as the number of steps increases, while the R1 model shows a steady improvement (as shown at the bottom of the figure above).
-</div>
+Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model is slightly lower than that of the R1 model (as shown at the left of the figure below). However, on the out-of-domain test data, the SFT model’s performance deteriorates significantly as the number of steps increases, while the R1 model shows a steady improvement (as shown at the right of the figure below).
+
+![image](./assets/performance2.png)
 
 ## 🗞️ Update
+- **`2025-03-17`**: Our VLM-R1 Math model reaches the top of the Open-Compass Math Leaderboard (under 4B parameters). We have released the [checkpoint](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305).
 - **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data). We also provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh), see [here](#for-your-own-data) for details.
 - **`2025-03-13`**: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
 - **`2025-03-02`**: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh) for details.
@@ -26,14 +33,28 @@ Specifically, for the task of Referring Expression Comprehension (REC), we train
 - **`2025-02-17`**: We release the VLM-R1 REC [Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression) on Hugging Face Spaces.
 - **`2025-02-15`**: We release the VLM-R1 repository and [GRPO](#grpo) training script.
 
+
+## 🤖 Models
+- **[`Math`](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305)**: Through VLM-R1 training, our math model focuses on multimodal reasoning tasks and has achieved Top1 on the OpenCompass Multi-modal Reasoning Leaderboard among models < 4B.
+- **[`REC`](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps)**: Trained with VLM-R1, our Referring Expression Comprehension (REC) model showcases the superior performance on out-of-domain data and a series of reasoning-grounding tasks.
+
+| Version | Base VLM | Checkpoint | Task Type | 
+|----------|----------------|---------------|----------------|
+| VLM-R1-Qwen2.5VL-3B-Math-0305 | Qwen2.5VL-3B | [omlab/VLM-R1-Qwen2.5VL-3B-Math-0305](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305) | Multi-Modal Math | 
+| VLM-R1-Qwen2.5VL-3B-REC-500steps | Qwen2.5VL-3B | [omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps) | REC/Reasoning-Grounding | 
+
+
 ## 🎯 ToDo
 - [x] Implement multi-node training.
 - [x] Implement LoRA Fine-tuning.
 - [x] Support more Multimodal LLMs.
 - [x] Support multi-image input.
-- [ ] Release the VLM-R1 Math model.
+- [x] Release the VLM-R1 Math model.
+- [ ] Release the blog of VLM-R1.
 - [ ] Study cross task generalization.
 - [ ] Enhance VLM for other tasks [welcome issue]. 
+
+
 
 ## 🛠️ Setup
 
@@ -97,8 +118,9 @@ torchrun --nproc_per_node="8" \
     --save_only_model true \
     --freeze_vision_modules false # If you want to only finetune the language model, set this to true.
 ```
-
-![image](./assets/iou.jpg)
+<div align="center">
+<img src="./assets/iou.jpg" width="750"/>
+</div>
 <!-- ![image](./assets/wandb.jpg) -->
 
 #### 📚 Multi-Node GRPO
