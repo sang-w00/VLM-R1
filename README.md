@@ -1,6 +1,6 @@
 # VLM-R1: A stable and generalizable R1-style Large Vision-Language Model
 
-<font size=4><div align='center' > [[🤗 REC Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression)] [[🤗 OVD Demo](https://huggingface.co/spaces/omlab/VLM-R1-OVD)] [[🤗 REC Data](https://huggingface.co/datasets/omlab/VLM-R1)] [[🤗 Checkpoint](https://huggingface.co/collections/omlab/vlm-r1-models-67b7352db15c19d57157c348)] [[📝 Blog](https://om-ai-lab.github.io/index.html)] </div></font>
+<font size=4><div align='center' > [[🤗 REC Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression)] [[🤗 OVD Demo](https://huggingface.co/spaces/omlab/VLM-R1-OVD)] [[🤗 REC Data](https://huggingface.co/datasets/omlab/VLM-R1)] [[🤗 Checkpoints](https://huggingface.co/collections/omlab/vlm-r1-models-67b7352db15c19d57157c348)] [[📝 Blog](https://om-ai-lab.github.io/index.html)] </div></font>
 
 
 <div align="center">
@@ -54,6 +54,7 @@ This repository supports:
 
 | Version | Base VLM | Checkpoint | Task Type | 
 |----------|----------------|---------------|----------------|
+| VLM-R1-Qwen2.5VL-3B-OVD-0321 | Qwen2.5VL-3B | [omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321) | Open-Vocabulary Detection | 
 | VLM-R1-Qwen2.5VL-3B-Math-0305 | Qwen2.5VL-3B | [omlab/VLM-R1-Qwen2.5VL-3B-Math-0305](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305) | Multi-Modal Math | 
 | VLM-R1-Qwen2.5VL-3B-REC-500steps | Qwen2.5VL-3B | [omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps) | REC/Reasoning-Grounding | 
 
