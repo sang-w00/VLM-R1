@@ -118,8 +118,9 @@ class Qwen2VLModule(VLMBaseModule):
                     bbox_match = re.search(bbox_pattern, content_answer)
                     if bbox_match:
                         bbox = [int(bbox_match.group(1)), int(bbox_match.group(2)), int(bbox_match.group(3)), int(bbox_match.group(4))]
-                        if iou(bbox, sol) > 0.5:
-                            reward = 1.0
+                        # if iou(bbox, sol) > 0.5:
+                        #     reward = 1.0
+                        reward = iou(bbox, sol)
             except Exception:
                 pass  # Continue to next verification method if this fails
                     
