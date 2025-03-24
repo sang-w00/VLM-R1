@@ -19,11 +19,7 @@ Since the introduction of [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-
 Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model shows little change compared to that of the R1 model base model when the number of training steps is relatively small (100–600 steps), while the R1 model shows a steady improvement (as shown at the left of the figure below). More importantly, on the out-of-domain test data, the SFT model’s performance deteriorates slightly as the number of steps increases. Nevertheless, the RL model generalizes its reasoning ability to the out-of-domain data (as shown at the right of the figure below).
 
 ![image](./assets/performance3.png)
-<font size=2>
-<div align="center">
-    Our previous experimental results had some imprecise configurations. It turns out that SFT and RL did not make much difference on RefGTA. So we re-conducted the experiments using a more complex out-of-domain dataset. The current results are more credible and reliable. See our <a href="https://om-ai-lab.github.io/2025_03_24.html">findings</a> for details.
-</div>
-</font>
+\* *We found previous REC SFT exps used a mismatch pixel config. Therefore, we re-run the study with the correct config on a more complex out-of-domain data. See our findings for details. See our [findings](https://om-ai-lab.github.io/2025_03_24.html) for details.*
 
 ## 🚀 Features
 This repository supports:
