@@ -4,10 +4,10 @@
 
 
 <div align="center">
-<img src="./assets/math-leaderboard.jpg" width="900"/>
+<img src="./assets/performance4.png" width="900"/>
 <div>
   <font size=4>
-    <p>🎉  <b>Our VLM-R1 Math model reaches the top of the Open-Compass Math Leaderboard (under 4B parameters).</b></p>
+    <p>🎉  <b>Our VLM-R1 Math model reaches the top of the Open-Compass Math Leaderboard (under 4B parameters) and OVD model achieves the state-of-the-art performance on OVDEval.</b></p>
   </font>
 </div>
 </div>
@@ -16,10 +16,14 @@
 
 Since the introduction of [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-R1), numerous works have emerged focusing on reproducing and improving upon it. In this project, we propose VLM-R1, a stable and generalizable R1-style Large Vision-Language Model. 
 
-Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model is slightly lower than that of the R1 model (as shown at the left of the figure below). However, on the out-of-domain test data, the SFT model’s performance deteriorates significantly as the number of steps increases, while the R1 model shows a steady improvement (as shown at the right of the figure below).
+Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model shows little change compared to that of the R1 model base model when the number of training steps is relatively small (100–600 steps), while the R1 model shows a steady improvement (as shown at the left of the figure below). More importantly, on the out-of-domain test data, the SFT model’s performance deteriorates slightly as the number of steps increases. Nevertheless, the RL model generalizes its reasoning ability to the out-of-domain data (as shown at the right of the figure below).
 
-![image](./assets/performance2.png)
-
+![image](./assets/performance3.png)
+<div align="center">
+  <font size=2>
+    <p> Our previous experimental results had some imprecise configurations. It turns out that SFT and RL did not make much difference on RefGTA. So we re-conducted the experiments using a more complex out-of-domain dataset. The current results are more credible and reliable. See our <a href="https://om-ai-lab.github.io/2025_03_24.html">findings</a> for details.</p>
+  </font>
+</div>
 
 ## 🚀 Features
 This repository supports:
@@ -34,8 +38,8 @@ This repository supports:
 
 ## 🗞️ Update
 - **`2025-03-23`**: 🔥 We release the VLM-R1-OVD [model weights](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321) and [demo](https://huggingface.co/spaces/omlab/VLM-R1-OVD), which shows the state-of-the-art performance on OVDEval. Welcome to use it.
-- **`2025-03-20`**: 🔥 We achieved SOTA results on OVDEval with our RL-based model, outperforming SFT baselines and specialized object detection models. Read our [blog post](https://om-ai-lab.github.io/2025_03_20.html) for details on how reinforcement learning enhances object detection performance.
-- **`2025-03-17`**: Our VLM-R1 Math model reaches the top of the Open-Compass Math Leaderboard (under 4B parameters). We have released the [checkpoint](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305).
+- **`2025-03-20`**: 🔥 We achieved SOTA results on [OVDEval](https://github.com/om-ai-lab/OVDEval) with our RL-based model, outperforming SFT baselines and specialized object detection models. Read our [blog post](https://om-ai-lab.github.io/2025_03_20.html) for details on how reinforcement learning enhances object detection performance.
+- **`2025-03-17`**: Our VLM-R1 Math model reaches the top of the [Open-Compass Math Leaderboard](https://rank.opencompass.org.cn/leaderboard-multimodal-reasoning/?m=REALTIME) (under 4B parameters). We have released the [checkpoint](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305).
 - **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data). We also provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh), see [here](#for-your-own-data) for details.
 - **`2025-03-13`**: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
 - **`2025-03-02`**: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh) for details.
@@ -66,7 +70,9 @@ This repository supports:
 - [x] Support more Multimodal LLMs.
 - [x] Support multi-image input.
 - [x] Release the VLM-R1 Math model.
-- [ ] Release the blog of VLM-R1.
+- [x] Release the blog of VLM-R1.
+- [x] Release the VLM-R1-OVD model.
+- [ ] Release the technical report of VLM-R1.
 - [ ] Study cross task generalization.
 - [ ] Enhance VLM for other tasks [welcome issue]. 
 
@@ -88,7 +94,7 @@ bash setup.sh
 
 1. Download the [COCO Train2014 image](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/train2014.zip) and unzip it, and we refer to the image dir as `<your_image_root>`.
 
-2. Download the [RefCOCO/+/g and RefGTA Annotation files](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_processed.zip) and unzip it (RefGTA is used for out-of-domain evaluation).
+2. Download the [RefCOCO/+/g and LISA-Grounding Annotation files](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_processed.zip) and unzip it (LISA-Grounding is used for out-of-domain evaluation).
 
 3. Write the path of the annotation files in the `src/open-r1-multimodal/data_config/rec.yaml` file.
 ```bash
@@ -183,13 +189,13 @@ If you want to use multi-image input, you can use the following format:
   "id": 1,
   "image": ["Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16885.png", "Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16886.png"],
   "conversations": [
-    {"from": "human", "value": "<image><image>What number of purple metallic balls in total in the two images?"},
+    {"from": "human", "value": "<image><image>What number of purple metallic balls in total within the two images?"},
     {"from": "gpt", "value": "3"}
   ]
 }
 ```
-
-Note: The image path in the jsonl file should be relative to the image folder specified in `--image_folders`. The absolute path of the input image is constructed as `os.path.join(image_folder, data['image'])`. For example:
+> [!NOTE] 
+> The image path in the jsonl file should be relative to the image folder specified in `--image_folders`. The absolute path of the input image is constructed as `os.path.join(image_folder, data['image'])`. For example:
 - If your jsonl has `"image": "folder1/image1.jpg"`
 - And you specify `--image_folders "/path/to/images/"`
 - The full image path will be `/path/to/images/folder1/image1.jpg`
@@ -230,18 +236,18 @@ bash src/open-r1-multimodal/run_scripts/run_grpo_gui.sh
 
 ![image](./assets/data.png)
 
-1. Download the provided [RefGTA images](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/refgta.zip).
+1. Download the provided [LISA-Grounding images](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/lisa-test.zip).
 ```bash
 cd ./src/eval
 
 # Remember to change the model path, image root, and annotation path in the script
-python test_rec_r1.py # for GRPO
-python test_rec_baseline.py # for SFT
+torchrun --nproc_per_node="X" test_rec_r1.py # for GRPO. 'X' is the number of GPUs you have.
+torchrun --nproc_per_node="X" test_rec_baseline.py # for SFT.
 ```
 
 ## 🤝 Acknowledgements
 
-We would like to express our sincere gratitude to [DeepSeek](https://github.com/deepseek-ai/DeepSeek-R1), [Open-R1](https://github.com/huggingface/open-r1), [QwenVL](https://github.com/QwenLM/Qwen2.5-VL), [Open-R1-Multimodal](https://github.com/EvolvingLMMs-Lab/open-r1-multimodal), [R1-V](https://github.com/Deep-Agent/R1-V), [RefCOCO](https://github.com/lichengunc/refer), and [RefGTA](https://github.com/mikittt/easy-to-understand-REG/tree/master/pyutils/refer2) for providing open-source resources that contributed to the development of this project.
+We would like to express our sincere gratitude to [DeepSeek](https://github.com/deepseek-ai/DeepSeek-R1), [Open-R1](https://github.com/huggingface/open-r1), [QwenVL](https://github.com/QwenLM/Qwen2.5-VL), [Open-R1-Multimodal](https://github.com/EvolvingLMMs-Lab/open-r1-multimodal), [R1-V](https://github.com/Deep-Agent/R1-V), [RefCOCO](https://github.com/lichengunc/refer), [RefGTA](https://github.com/mikittt/easy-to-understand-REG/tree/master/pyutils/refer2), [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory), [OVDEval](https://github.com/om-ai-lab/OVDEval), [GUI-Testing-Arena](https://huggingface.co/datasets/songjah/GTArena-UI-Defects), and [LISA](https://github.com/dvlab-research/LISA) for providing open-source resources that contributed to the development of this project.
 
 
 
