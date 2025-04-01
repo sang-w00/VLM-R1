@@ -55,7 +55,7 @@ from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, mo
 monkey_patch_qwen2_5vl_flash_attn()    
 
 
-# 全局变量
+
 tokenizer = None
 
 def initialize_tokenizer(model_path):
@@ -507,43 +507,43 @@ def repetition_reward(content, **kwargs):
     if content == '':
         return 0.0
 
-    # 首先尝试提取明确标记的 JSON 部分
+    # First, try to extract explicitly marked JSON sections
     pattern = r'```json(.*?)```'
     json_match = re.search(pattern, content, re.DOTALL)
     
     if json_match:
         bbox_json = json_match.group(1).strip()
     else:
-        # 如果没有找到明确标记的 JSON，尝试查找任何可能的 JSON 部分
+        # If no explicitly marked JSON is found, try to find any possible JSON sections
         pattern = r'```(.*?)```'
         json_match = re.search(pattern, content, re.DOTALL)
         bbox_json = json_match.group(1).strip() if json_match else None
         
-        # 如果还是没找到，尝试查找可能的 JSON 数组部分
+        # If still not found, try to find possible JSON array sections
         if not bbox_json:
             pattern = r'\[\s*{.*?"bbox_2d".*?"label".*?}\s*\]'
             json_match = re.search(pattern, content, re.DOTALL)
             bbox_json = json_match.group(0) if json_match else None
     
-    # 尝试解析 JSON 数据
+    # Try to parse JSON data
     if bbox_json:
         try:
-            # 尝试直接解析
+            # Try direct parsing
             data = json.loads(bbox_json)
         except json.JSONDecodeError:
             try:
-                # 如果直接解析失败，尝试使用 json_repair 修复
+                # If direct parsing fails, try using json_repair to repair
                 repaired_json = repair_json(bbox_json)
                 data = json.loads(repaired_json)
             except:
-                # 如果修复也失败，则转到普通文本处理
+                # If repair also fails, switch to plain text processing
                 data = None
         if data and isinstance(data, list):
-            # 确保数据是列表形式
+            # Ensure data is in list format
             try:
-                # 对于 JSON 数据，将 ngram_size 设置为 1
+                # For JSON data, set ngram_size to 1
                 ngram_size = 1
-                # 将每个对象的 'bbox_2d' 和 'label' 组合成字符串
+                # Combine 'bbox_2d' and 'label' of each object into a string
                 items = []
                 for item in data:
                     if 'bbox_2d' in item and 'label' in item:
@@ -568,10 +568,10 @@ def repetition_reward(content, **kwargs):
 
                 return reward
             except KeyError:
-                # 如果缺少必要的键，则转到普通文本处理
+                # If necessary keys are missing, switch to plain text processing
                 pass
     
-    # 如果没有找到 JSON 部分或 JSON 处理失败，则作为普通文字处理
+    # If no JSON section is found or JSON processing fails, treat as plain text
     ngram_size = 6
     
     if len(content.split()) < ngram_size:
