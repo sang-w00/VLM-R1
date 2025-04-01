@@ -370,7 +370,8 @@ class VLMGRPOTrainer(Trainer):
             self.generation_config.eos_token_id = self.vlm_module.get_eos_token_id(processing_class)
             print(222, self.vlm_module.get_eos_token_id(processing_class))
         self.beta = args.beta
-        self.epsilon = args.epsilon
+        self.epsilon_low = args.epsilon
+        self.epsilon_high = args.epsilon_high if args.epsilon_high is not None else args.epsilon
 
         # Multi-step
         self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
@@ -610,7 +611,8 @@ class VLMGRPOTrainer(Trainer):
                     ref_per_token_logps = self._get_per_token_logps(
                         model, prompt_completion_ids, attention_mask, **multimodal_inputs
                     )
-        ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1:]
+        if ref_per_token_logps is not None:
+            ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1:]
 
         # Decode the generated completions
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
@@ -732,7 +734,7 @@ class VLMGRPOTrainer(Trainer):
 
         # Compute the policy ratio and clipped version
         coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
