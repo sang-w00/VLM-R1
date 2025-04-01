@@ -214,7 +214,8 @@ def yes_no_reward(content, sol, **kwargs):
 
     return reward
 
-def calculate_map(pred_bbox_list, gt_bbox_list):
+# score_type: 0 for mAP, 1 for mAP 50
+def calculate_map(pred_bbox_list, gt_bbox_list, score_type=0):
     # Calculate mAP
 
     # Initialize COCO object for ground truth
@@ -271,23 +272,26 @@ def calculate_map(pred_bbox_list, gt_bbox_list):
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
-    return coco_eval.stats[1]
+    return coco_eval.stats[score_type]
 
-def map_reward(content, sol, **kwargs):
+def map_reward(content, sol, length_reward=False, score_type=0, **kwargs):
     """
-    Calculate mean average precision (mAP) reward between predicted and ground truth bounding boxes
+    Calculate mean average precision (mAP) reward between predicted and ground truth bounding boxes.
     
     Args:
-        content: String containing predicted bounding boxes in JSON format
-        sol: String containing ground truth bounding boxes in JSON format
+        content (str): String containing predicted bounding boxes in JSON format
+        sol (str): String containing ground truth bounding boxes in JSON format
+        length_reward (bool, optional): Whether to include length penalty in reward calculation. Defaults to False.
+        score_type (int, optional): Type of COCO evaluation metric to use. Defaults to 0 (mAP).
+        **kwargs: Additional keyword arguments
         
     Returns:
-        float: mAP reward score between 0 and 1
+        float: mAP reward score between 0 and 1. If length_reward is True, the score is multiplied by a length penalty factor.
     """
     # Extract JSON content between ```json tags
     pattern = r'```json(.*?)```'
-    json_match = re.search(pattern, sol, re.DOTALL)
-    bbox_json = json_match.group(1).strip() if json_match else None
+    json_match = re.findall(pattern, sol, re.DOTALL)
+    bbox_json = json_match[-1].strip() if json_match else None
 
     # Parse ground truth JSON to get bbox list
     gt_bbox_list = []
@@ -297,10 +301,10 @@ def map_reward(content, sol, **kwargs):
     
     # Parse predicted JSON to get bbox list
     pred_bbox_list = []
-    json_match = re.search(pattern, content, re.DOTALL)
+    json_match = re.findall(pattern, content, re.DOTALL)
     if json_match:
         try:
-            bbox_data = json.loads(json_match.group(1).strip())
+            bbox_data = json.loads(json_match[-1].strip())
             pred_bbox_list = [item for item in bbox_data]
         except:
             # Return empty list if JSON parsing fails
@@ -308,12 +312,89 @@ def map_reward(content, sol, **kwargs):
 
     # Calculate mAP if both prediction and ground truth exist
     if len(pred_bbox_list) > 0 and len(gt_bbox_list) > 0:
-        bbox_reward = calculate_map(pred_bbox_list, gt_bbox_list)
+        bbox_reward = calculate_map(pred_bbox_list, gt_bbox_list, score_type=score_type)
+    elif len(pred_bbox_list) == 0 and len(gt_bbox_list) == 0:
+        bbox_reward = 1.0
     else:
         bbox_reward = 0.0
     
-    return bbox_reward
+    if length_reward:
+        # Calculate length penalty based on ratio of ground truth to predicted bounding boxes
+        gt_length = len(gt_bbox_list)
+        pred_length = len(pred_bbox_list)
+        # Full score if prediction has fewer boxes than ground truth, otherwise penalize proportionally
+        length_score = 1.0 if gt_length >= pred_length else gt_length/pred_length
+        return bbox_reward * length_score
+    else:
+        return bbox_reward
 
+def od_reward(content, sol, score_type=0, **kwargs):
+    """
+    Calculate reward for object detection task by comparing predicted and ground truth answers.
+    
+    Args:
+        content (str): Model's predicted answer containing bounding box annotations
+        sol (str): Ground truth answer containing bounding box annotations 
+        score_type (int): Type of COCO evaluation metric to use (default: 0 for mAP)
+        **kwargs: Additional keyword arguments
+        
+    Returns:
+        float: Reward score between 0 and 1 based on mAP between predicted and ground truth boxes
+    """
+    # Pattern to extract content between <answer> tags
+    match_pattern = r'<answer>(.*?)</answer>'
+
+    # Extract ground truth answer
+    sol_match = re.search(match_pattern, sol, re.DOTALL)
+    ground_truth = sol_match.group(1).strip() if sol_match else None
+
+    # Extract predicted answer (using last match if multiple)
+    content_match = re.findall(match_pattern, content, re.DOTALL)
+    student_answer = content_match[-1].strip() if content_match else None
+
+    # Return 0 if no prediction
+    if student_answer is None:
+        return 0.0
+    # Return 1 if both prediction and ground truth are None
+    elif ground_truth == "None" and student_answer == "None":
+        return 1.0
+    # Otherwise calculate mAP between prediction and ground truth
+    else:
+        return map_reward(student_answer, ground_truth, score_type=score_type)
+
+def odLength_reward(content, sol, **kwargs):
+    """
+    Calculate reward for object detection task with length penalty.
+    
+    Args:
+        content (str): Model's predicted answer containing bounding box annotations
+        sol (str): Ground truth answer containing bounding box annotations
+        **kwargs: Additional keyword arguments
+        
+    Returns:
+        float: Reward score between 0 and 1 based on mAP and length penalty
+    """
+    # Pattern to extract content between <answer> tags
+    match_pattern = r'<answer>(.*?)</answer>'
+
+    # Extract ground truth answer
+    sol_match = re.search(match_pattern, sol, re.DOTALL)
+    ground_truth = sol_match.group(1).strip() if sol_match else None
+
+    # Extract predicted answer (using last match if multiple)
+    content_match = re.findall(match_pattern, content, re.DOTALL)
+    student_answer = content_match[-1].strip() if content_match else None
+
+    # Return 0 if no prediction
+    if student_answer is None:
+        return 0.0
+    # Return 1 if both prediction and ground truth are None
+    elif ground_truth == "None" and student_answer == "None":
+        return 1.0
+    # Calculate mAP with length penalty
+    else:
+        bbox_reward = map_reward(student_answer, ground_truth, length_reward=True, score_type=0)
+        return bbox_reward
 
 def numeric_reward(content, sol, **kwargs):
     content = clean_text(content)
@@ -407,6 +488,12 @@ def accuracy_reward(completions, solution, **kwargs):
             reward = map_reward(content, sol)
         elif accu_reward_method == 'math':
             reward = math_reward(content, sol)
+        elif accu_reward_method == 'od_ap':
+            reward = od_reward(content, sol)
+        elif accu_reward_method == 'od_ap50':
+            reward = od_reward(content, sol, score_type=1)
+        elif accu_reward_method == 'odLength':
+            reward = odLength_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
