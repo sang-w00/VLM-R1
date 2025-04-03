@@ -31,14 +31,16 @@ from Levenshtein import ratio
 from open_r1.utils.pycocotools.coco import COCO
 from open_r1.utils.pycocotools.cocoeval import COCOeval
 import json
+import math
+from json_repair import repair_json
 
 from open_r1.vlm_modules import *
 
-# ----------------------- Fix the flash attention bug in the current version of transformers -----------------------
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionFlashAttention2, apply_rotary_pos_emb_flashatt, flash_attn_varlen_func
 import torch
 from typing import Tuple
 from transformers.utils import logging
+from transformers import AutoProcessor, AutoTokenizer
 
 from openai import OpenAI
 
@@ -49,43 +51,18 @@ client = OpenAI(
     base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 )
 
-def custom_forward(
-        self,
-        hidden_states: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        rotary_pos_emb: Optional[torch.Tensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-    ) -> torch.Tensor:
-        seq_length = hidden_states.shape[0]
-        q, k, v = self.qkv(hidden_states).reshape(seq_length, 3, self.num_heads, -1).permute(1, 0, 2, 3).unbind(0)
-        # print(111, 222, 333, 444, 555, 666, 777, 888, 999)
-        if position_embeddings is None:
-            logger.warning_once(
-                "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
-                "through `rotary_pos_emb` (2D tensor of RoPE theta values), to using externally computed "
-                "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.54 `rotary_pos_emb` will be "
-                "removed and `position_embeddings` will be mandatory."
-            )
-            emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
-            cos = emb.cos().float()
-            sin = emb.sin().float()
-        else:
-            cos, sin = position_embeddings
-            # Add this
-            cos = cos.to(torch.float)
-            sin = sin.to(torch.float)
-        q, k = apply_rotary_pos_emb_flashatt(q.unsqueeze(0), k.unsqueeze(0), cos, sin)
-        q = q.squeeze(0)
-        k = k.squeeze(0)
+from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward
+monkey_patch_qwen2_5vl_flash_attn()    
 
-        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
-        attn_output = flash_attn_varlen_func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen).reshape(
-            seq_length, -1
-        )
-        attn_output = self.proj(attn_output)
-        return attn_output
 
-Qwen2_5_VLVisionFlashAttention2.forward = custom_forward
+
+tokenizer = None
+
+def initialize_tokenizer(model_path):
+    global tokenizer
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+    return tokenizer
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -252,7 +229,8 @@ def yes_no_reward(content, sol, **kwargs):
 
     return reward
 
-def calculate_map(pred_bbox_list, gt_bbox_list):
+# score_type: 0 for mAP, 1 for mAP 50
+def calculate_map(pred_bbox_list, gt_bbox_list, score_type=0):
     # Calculate mAP
 
     # Initialize COCO object for ground truth
@@ -309,23 +287,26 @@ def calculate_map(pred_bbox_list, gt_bbox_list):
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
-    return coco_eval.stats[1]
+    return coco_eval.stats[score_type]
 
-def map_reward(content, sol, **kwargs):
+def map_reward(content, sol, length_reward=False, score_type=0, **kwargs):
     """
-    Calculate mean average precision (mAP) reward between predicted and ground truth bounding boxes
+    Calculate mean average precision (mAP) reward between predicted and ground truth bounding boxes.
     
     Args:
-        content: String containing predicted bounding boxes in JSON format
-        sol: String containing ground truth bounding boxes in JSON format
+        content (str): String containing predicted bounding boxes in JSON format
+        sol (str): String containing ground truth bounding boxes in JSON format
+        length_reward (bool, optional): Whether to include length penalty in reward calculation. Defaults to False.
+        score_type (int, optional): Type of COCO evaluation metric to use. Defaults to 0 (mAP).
+        **kwargs: Additional keyword arguments
         
     Returns:
-        float: mAP reward score between 0 and 1
+        float: mAP reward score between 0 and 1. If length_reward is True, the score is multiplied by a length penalty factor.
     """
     # Extract JSON content between ```json tags
     pattern = r'```json(.*?)```'
-    json_match = re.search(pattern, sol, re.DOTALL)
-    bbox_json = json_match.group(1).strip() if json_match else None
+    json_match = re.findall(pattern, sol, re.DOTALL)
+    bbox_json = json_match[-1].strip() if json_match else None
 
     # Parse ground truth JSON to get bbox list
     gt_bbox_list = []
@@ -335,10 +316,10 @@ def map_reward(content, sol, **kwargs):
     
     # Parse predicted JSON to get bbox list
     pred_bbox_list = []
-    json_match = re.search(pattern, content, re.DOTALL)
+    json_match = re.findall(pattern, content, re.DOTALL)
     if json_match:
         try:
-            bbox_data = json.loads(json_match.group(1).strip())
+            bbox_data = json.loads(json_match[-1].strip())
             pred_bbox_list = [item for item in bbox_data]
         except:
             # Return empty list if JSON parsing fails
@@ -346,12 +327,415 @@ def map_reward(content, sol, **kwargs):
 
     # Calculate mAP if both prediction and ground truth exist
     if len(pred_bbox_list) > 0 and len(gt_bbox_list) > 0:
-        bbox_reward = calculate_map(pred_bbox_list, gt_bbox_list)
+        bbox_reward = calculate_map(pred_bbox_list, gt_bbox_list, score_type=score_type)
+    elif len(pred_bbox_list) == 0 and len(gt_bbox_list) == 0:
+        bbox_reward = 1.0
     else:
         bbox_reward = 0.0
     
-    return bbox_reward
+    if length_reward:
+        # Calculate length penalty based on ratio of ground truth to predicted bounding boxes
+        gt_length = len(gt_bbox_list)
+        pred_length = len(pred_bbox_list)
+        # Full score if prediction has fewer boxes than ground truth, otherwise penalize proportionally
+        length_score = 1.0 if gt_length >= pred_length else gt_length/pred_length
+        return bbox_reward * length_score
+    else:
+        return bbox_reward
 
+def od_reward(content, sol, score_type=0, **kwargs):
+    """
+    Calculate reward for object detection task by comparing predicted and ground truth answers.
+    
+    Args:
+        content (str): Model's predicted answer containing bounding box annotations
+        sol (str): Ground truth answer containing bounding box annotations 
+        score_type (int): Type of COCO evaluation metric to use (default: 0 for mAP)
+        **kwargs: Additional keyword arguments
+        
+    Returns:
+        float: Reward score between 0 and 1 based on mAP between predicted and ground truth boxes
+    """
+    # Pattern to extract content between <answer> tags
+    match_pattern = r'<answer>(.*?)</answer>'
+
+    # Extract ground truth answer
+    sol_match = re.search(match_pattern, sol, re.DOTALL)
+    ground_truth = sol_match.group(1).strip() if sol_match else None
+
+    # Extract predicted answer (using last match if multiple)
+    content_match = re.findall(match_pattern, content, re.DOTALL)
+    student_answer = content_match[-1].strip() if content_match else None
+
+    # Return 0 if no prediction
+    if student_answer is None:
+        return 0.0
+    # Return 1 if both prediction and ground truth are None
+    elif ground_truth == "None" and student_answer == "None":
+        return 1.0
+    # Otherwise calculate mAP between prediction and ground truth
+    else:
+        return map_reward(student_answer, ground_truth, score_type=score_type)
+
+def odLength_reward(content, sol, **kwargs):
+    """
+    Calculate reward for object detection task with length penalty.
+    
+    Args:
+        content (str): Model's predicted answer containing bounding box annotations
+        sol (str): Ground truth answer containing bounding box annotations
+        **kwargs: Additional keyword arguments
+        
+    Returns:
+        float: Reward score between 0 and 1 based on mAP and length penalty
+    """
+    # Pattern to extract content between <answer> tags
+    match_pattern = r'<answer>(.*?)</answer>'
+
+    # Extract ground truth answer
+    sol_match = re.search(match_pattern, sol, re.DOTALL)
+    ground_truth = sol_match.group(1).strip() if sol_match else None
+    # Extract predicted answer (using last match if multiple)
+    content_match = re.findall(match_pattern, content, re.DOTALL)
+    student_answer = content_match[-1].strip() if content_match else None
+
+    # Return 0 if no prediction
+    if student_answer is None:
+        return 0.0
+    # Return 1 if both prediction and ground truth are None
+    elif ground_truth == "None" and student_answer == "None":
+        return 1.0
+    # Calculate mAP with length penalty
+    else:
+        bbox_reward = map_reward(student_answer, ground_truth, length_reward=True, score_type=0)
+        return bbox_reward
+
+def iou(box1, box2):
+    inter_x1 = max(box1[0], box2[0])
+    inter_y1 = max(box1[1], box2[1])
+    inter_x2 = min(box1[2]-1, box2[2]-1)
+    inter_y2 = min(box1[3]-1, box2[3]-1)
+    if inter_x1 < inter_x2 and inter_y1 < inter_y2:
+        inter = (inter_x2-inter_x1+1)*(inter_y2-inter_y1+1)
+    else:
+        inter = 0
+    union = (box1[2]-box1[0])*(box1[3]-box1[1]) + (box2[2]-box2[0])*(box2[3]-box2[1]) - inter
+    return float(inter)/union
+
+
+def detection_score(content, sol, iou_threshold=0.5, alpha=0.7, beta=0.0, gamma=0.3):
+    pattern = r'```json(.*?)```'
+    json_match = re.search(pattern, clean_text(content), re.DOTALL)
+    content_bbox_json = json_match.group(1).strip() if json_match else None
+    if content_bbox_json:
+        try:
+            bbox_data = json.loads(content_bbox_json)
+            pred_boxes = [item for item in bbox_data]
+        except:
+            pred_boxes = []
+
+    else:
+        pred_boxes = []
+
+    pattern = r'```json(.*?)```'
+    json_match = re.search(pattern, clean_text(sol), re.DOTALL)
+    sol_bbox_json = json_match.group(1).strip() if json_match else None
+    if sol_bbox_json:
+        bbox_data = json.loads(sol_bbox_json)
+        gt_boxes = [item for item in bbox_data]
+    else:
+        gt_boxes = []
+
+    """
+    Calculate the comprehensive score for object detection
+    
+    Parameters:
+        pred_boxes: List of predicted boxes, each element is in the format {"bbox_2d": [x1, y1, x2, y2], "label": "category name"}
+        gt_boxes: List of ground truth boxes, each element is in the format {"bbox_2d": [x1, y1, x2, y2], "label": "category name"}
+        iou_threshold: IoU threshold, default is 0.5
+        alpha: Position accuracy weight, default is 0.7
+        beta: Label accuracy weight, default is 0.0
+        gamma: Completeness weight (penalty for missed/false detections), default is 0.3
+        
+    Returns:
+        Comprehensive score, ranging from [0.0, 1.0]
+    """
+    # Handle edge cases
+    if len(gt_boxes) == 0:
+        return 1.0 if not pred_boxes else 0.0
+    
+    if len(pred_boxes) == 0:
+        return 0.0
+    
+    # Initialize matching results
+    matches = []  # Store matched pairs of predicted and ground truth boxes
+    unmatched_preds = list(range(len(pred_boxes)))  # Indices of unmatched predicted boxes
+    unmatched_gts = list(range(len(gt_boxes)))  # Indices of unmatched ground truth boxes
+    
+    # Calculate IoU matrix between all predicted and ground truth boxes
+    iou_matrix = []
+    for pred_idx, pred_box in enumerate(pred_boxes):
+        iou_row = []
+        for gt_idx, gt_box in enumerate(gt_boxes):
+            try:
+                curr_iou = iou(pred_box["bbox_2d"], gt_box["bbox_2d"])
+            except:
+                curr_iou = 0.0
+            iou_row.append(curr_iou)
+        iou_matrix.append(iou_row)
+    
+    # Greedy matching: find the best match for each predicted box
+    while unmatched_preds and unmatched_gts:
+        # Find the maximum IoU
+        max_iou = -1
+        max_pred_idx = -1
+        max_gt_idx = -1
+        
+        for pred_idx in unmatched_preds:
+            for gt_idx in unmatched_gts:
+                curr_iou = iou_matrix[pred_idx][gt_idx]
+                if curr_iou > max_iou:
+                    max_iou = curr_iou
+                    max_pred_idx = pred_idx
+                    max_gt_idx = gt_idx
+        
+        # Stop matching if the maximum IoU is below the threshold
+        if max_iou < iou_threshold:
+            break
+        
+        # Record matching results
+        try:
+            pred_label = pred_boxes[max_pred_idx]["label"].lower()
+        except:
+            pred_box = ""
+        try:
+            gt_label = gt_boxes[max_gt_idx]["label"].lower()
+        except:
+            gt_label = ""
+        label_correct = (pred_label == gt_label)
+        
+        if label_correct:
+            matches.append({
+                "pred_idx": max_pred_idx,
+                "gt_idx": max_gt_idx,
+                "iou": max_iou,
+                "label_correct": label_correct
+            })
+        else:
+            matches.append({
+                "pred_idx": max_pred_idx,
+                "gt_idx": max_gt_idx,
+                "iou": 0,
+                "label_correct": label_correct
+            })
+        
+        # Remove matched boxes from the unmatched list
+        unmatched_preds.remove(max_pred_idx)
+        unmatched_gts.remove(max_gt_idx)
+    
+    # Calculate position accuracy score (average IoU)
+    position_score = sum(m["iou"] for m in matches) / len(gt_boxes) if matches else 0.0
+    
+    # Calculate label accuracy score
+    label_score = sum(1.0 for m in matches if m["label_correct"]) / len(gt_boxes) if matches else 0.0
+    
+    # Calculate completeness score (considering missed and false detections)
+    # Miss rate = number of unmatched ground truth boxes / total number of ground truth boxes
+    # False alarm rate = number of unmatched predicted boxes / total number of predicted boxes
+    miss_rate = len(unmatched_gts) / len(gt_boxes)
+    false_alarm_rate = len(unmatched_preds) / len(pred_boxes) if pred_boxes else 0.0
+    
+    # Completeness score = 1 - (miss rate + false alarm rate) / 2
+    completeness_score = 1.0 - (miss_rate + false_alarm_rate) / 2.0
+    
+    # Calculate the final comprehensive score
+    final_score = (
+        alpha * position_score + 
+        beta * label_score + 
+        gamma * completeness_score
+    ) / (alpha + beta + gamma)
+
+    return final_score
+
+def cosine_reward(content, tokenizer, acc_reward, **kwargs):
+    #https://arxiv.org/abs/2502.03373
+    min_len_value_wrong = 0.0
+    max_len_value_wrong = -0.5
+    min_len_value_correct = 1.0
+    max_len_value_correct = 0.5
+    cosine_max_len = 1024
+
+    # processing_class = AutoProcessor.from_pretrained(model_path)
+    # tokenizer = processing_class.tokenizer
+    
+    gen_len = len(tokenizer.encode(content))
+    acc_reward = 1.0
+    is_correct = acc_reward >= 0.7
+    
+    if is_correct:
+        # Swap min/max for correct answers
+        min_value = max_len_value_correct
+        max_value = min_len_value_correct
+    else:
+        min_value = min_len_value_wrong
+        max_value = max_len_value_wrong
+
+    reward = max_value - (max_value - min_value) * (1 - math.cos(gen_len * math.pi / cosine_max_len)) / 2
+
+    return reward
+
+def repetition_reward(content, **kwargs):
+    max_penalty = -1.0
+
+    if content == '':
+        return 0.0
+
+    # First, try to extract explicitly marked JSON sections
+    pattern = r'```json(.*?)```'
+    json_match = re.search(pattern, content, re.DOTALL)
+    
+    if json_match:
+        bbox_json = json_match.group(1).strip()
+    else:
+        # If no explicitly marked JSON is found, try to find any possible JSON sections
+        pattern = r'```(.*?)```'
+        json_match = re.search(pattern, content, re.DOTALL)
+        bbox_json = json_match.group(1).strip() if json_match else None
+        
+        # If still not found, try to find possible JSON array sections
+        if not bbox_json:
+            pattern = r'\[\s*{.*?"bbox_2d".*?"label".*?}\s*\]'
+            json_match = re.search(pattern, content, re.DOTALL)
+            bbox_json = json_match.group(0) if json_match else None
+    
+    # Try to parse JSON data
+    if bbox_json:
+        try:
+            # Try direct parsing
+            data = json.loads(bbox_json)
+        except json.JSONDecodeError:
+            try:
+                # If direct parsing fails, try using json_repair to repair
+                repaired_json = repair_json(bbox_json)
+                data = json.loads(repaired_json)
+            except:
+                # If repair also fails, switch to plain text processing
+                data = None
+        if data and isinstance(data, list):
+            # Ensure data is in list format
+            try:
+                # For JSON data, set ngram_size to 1
+                ngram_size = 1
+                # Combine 'bbox_2d' and 'label' of each object into a string
+                items = []
+                for item in data:
+                    if 'bbox_2d' in item and 'label' in item:
+                        items.append(f"{item['bbox_2d']}_{item['label']}")
+                
+                @staticmethod
+                def zipngram(text: list, ngram_size: int):
+                    return zip(*[text[i:] for i in range(ngram_size)])
+                
+                ngrams = set()
+                total = 0
+
+                for ng in zipngram(items, ngram_size):
+                    ngrams.add(ng)
+                    total += 1
+
+                if total == 0:
+                    return 0.0
+
+                scaling = 1 - len(ngrams) / total
+                reward = scaling * max_penalty
+
+                return reward
+            except KeyError:
+                # If necessary keys are missing, switch to plain text processing
+                pass
+    
+    # If no JSON section is found or JSON processing fails, treat as plain text
+    ngram_size = 6
+    
+    if len(content.split()) < ngram_size:
+        return 0.0
+    
+    @staticmethod
+    def zipngram(text: str, ngram_size: int):
+        words = text.lower().split()
+        return zip(*[words[i:] for i in range(ngram_size)])
+    
+    ngrams = set()
+    total = 0
+
+    for ng in zipngram(content, ngram_size):
+        ngrams.add(ng)
+        total += 1
+
+    scaling = 1 - len(ngrams) / total
+    reward = scaling * max_penalty
+
+    return reward
+
+
+def repetition_rewards(completions, solution, **kwargs):
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+
+    for content, sol in zip(contents, solution):
+        reward = repetition_reward(content)
+        rewards.append(reward)
+
+
+        if os.getenv("DEBUG_MODE") == "true":
+            log_path = os.getenv("LOG_PATH")
+            current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+            image_path = kwargs.get("image_path")[0] if "image_path" in kwargs else None
+            problem = kwargs.get("problem")[0]
+            if reward <= 0.0:  # this condition can be changed for debug
+                with open(log_path+"_repetition.txt", "a", encoding='utf-8') as f:
+                    f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
+                    f.write(f"image_path: {image_path}\n")
+                    f.write(f"problem: {problem}\n")
+                    f.write(f"Content: {content}\n")
+                    f.write(f"Solution: {sol}\n")     
+
+
+
+    return rewards
+
+
+def cosine_rewards(completions, solution, **kwargs):
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+
+    for content, sol in zip(contents, solution):
+        clean_content = clean_text(content)
+        sol = clean_text(sol)
+        if sol == "none":
+            if clean_content == "none":
+                acc_reward = 1.0
+            else:
+                acc_reward = 0.0
+        else:
+            acc_reward = detection_score(clean_content, sol)
+        reward = cosine_reward(content, tokenizer, acc_reward)
+        rewards.append(reward)
+
+        if os.getenv("DEBUG_MODE") == "true":
+            log_path = os.getenv("LOG_PATH")
+            current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+            image_path = kwargs.get("image_path")[0] if "image_path" in kwargs else None
+            problem = kwargs.get("problem")[0]
+            if reward <=1.0:  # this condition can be changed for debug
+                with open(log_path+"_cosine.txt", "a", encoding='utf-8') as f:
+                    f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
+                    f.write(f"image_path: {image_path}\n")
+                    f.write(f"problem: {problem}\n")
+                    f.write(f"Content: {content}\n")
+                    f.write(f"Solution: {sol}\n")   
+
+    return rewards
 
 def numeric_reward(content, sol, **kwargs):
     content = clean_text(content)
@@ -445,6 +829,22 @@ def accuracy_reward(completions, solution, **kwargs):
             reward = map_reward(content, sol)
         elif accu_reward_method == 'math':
             reward = math_reward(content, sol)
+        elif accu_reward_method == 'weighted_sum':
+            clean_content = clean_text(content)
+            sol = clean_text(sol)
+            if sol == "none":
+                if clean_content == "none":
+                    reward = 1.0
+                else:
+                    reward = 0.0
+            else:
+                reward = detection_score(clean_content, sol)
+        elif accu_reward_method == 'od_ap':
+            reward = od_reward(content, sol)
+        elif accu_reward_method == 'od_ap50':
+            reward = od_reward(content, sol, score_type=1)
+        elif accu_reward_method == 'odLength':
+            reward = odLength_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
@@ -488,6 +888,8 @@ def format_reward(completions, **kwargs):
 reward_funcs_registry = {
     "accuracy": accuracy_reward,
     "format": format_reward,
+    "length": cosine_rewards,
+    "repetition": repetition_rewards,
 }
 
 @dataclass
@@ -617,7 +1019,7 @@ def main(script_args, training_args, model_args):
     # Select trainer class based on vlm_trainer argument
     trainer_cls = VLMGRPOTrainer
     print("using trainer:", trainer_cls.__name__)
-
+    initialize_tokenizer(model_args.model_name_or_path)
     # Initialize the GRPO trainer
     trainer = trainer_cls(
         model=model_args.model_name_or_path,
@@ -648,4 +1050,7 @@ def main(script_args, training_args, model_args):
 if __name__ == "__main__":
     parser = TrlParser((GRPOScriptArguments, GRPOConfig, GRPOModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+    if training_args.deepspeed and "zero3" in training_args.deepspeed:
+        print("zero3 is used, qwen2_5vl forward monkey patch is applied")
+        monkey_patch_qwen2_5vl_forward()
     main(script_args, training_args, model_args)

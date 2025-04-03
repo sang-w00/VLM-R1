@@ -611,7 +611,8 @@ class VLMGRPOTrainer(Trainer):
                     ref_per_token_logps = self._get_per_token_logps(
                         model, prompt_completion_ids, attention_mask, **multimodal_inputs
                     )
-        ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1:]
+        if ref_per_token_logps is not None:
+            ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1:]
 
         # Decode the generated completions
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
