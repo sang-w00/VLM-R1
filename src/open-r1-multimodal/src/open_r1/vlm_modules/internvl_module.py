@@ -64,7 +64,7 @@ class InvernVLModule(VLMBaseModule):
         return ['image_flags']
 
     def get_custom_processing_keywords(self):
-        return ['max_anyres_num']
+        return [('None', 'max_anyres_num')]
 
     def prepare_prompt(self, processing_class, inputs: dict[str, Union[torch.Tensor, Any]]):
         prompts_text = []

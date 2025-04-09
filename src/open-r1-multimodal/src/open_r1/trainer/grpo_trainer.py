@@ -303,9 +303,11 @@ class VLMGRPOTrainer(Trainer):
         if processing_class is None:
             processing_cls = self.vlm_module.get_processing_class()
             processing_class = processing_cls.from_pretrained(model_id, trust_remote_code=model_init_kwargs.get("trust_remote_code", None))
-            for processing_keyword in self.vlm_module.get_custom_processing_keywords():
+            for component, processing_keyword in self.vlm_module.get_custom_processing_keywords():
                 if processing_keyword in kwargs:
-                    setattr(processing_class, processing_keyword, kwargs[processing_keyword])
+                    # If we cannot find component in processing_class, return the processing_class itself
+                    processing_component = getattr(processing_class, component, processing_class)
+                    setattr(processing_component, processing_keyword, kwargs[processing_keyword])
             if getattr(processing_class, "tokenizer",  None) is not None:
                 pad_token_id = processing_class.tokenizer.pad_token_id
                 processing_class.pad_token_id = pad_token_id

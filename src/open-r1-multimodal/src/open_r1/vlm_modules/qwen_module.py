@@ -37,7 +37,7 @@ class Qwen2VLModule(VLMBaseModule):
         return []
     
     def get_custom_processing_keywords(self):
-        return ['max_pixels', 'min_pixels']
+        return [('image_processor', 'max_pixels'), ('image_processor', 'min_pixels')]
     
     def prepare_prompt(self, processing_class, inputs: dict[str, Union[torch.Tensor, Any]]):
         prompts_text = [maybe_apply_chat_template(example, processing_class)["prompt"] for example in inputs]
