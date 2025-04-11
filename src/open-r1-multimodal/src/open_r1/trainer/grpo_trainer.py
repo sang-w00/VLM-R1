@@ -298,7 +298,7 @@ class VLMGRPOTrainer(Trainer):
             # If PEFT is used, the reference model is not needed since the adapter can be disabled
             # to revert to the initial model.
             self.ref_model = None
-
+            
         # Processing class
         if processing_class is None:
             processing_cls = self.vlm_module.get_processing_class()
