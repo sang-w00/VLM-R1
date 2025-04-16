@@ -210,7 +210,20 @@ def qwen2_5vl_forward(
             rope_deltas=self.rope_deltas,
         )
 
-
 def monkey_patch_qwen2_5vl_forward():
     Qwen2_5_VLForConditionalGeneration.forward = qwen2_5vl_forward
+
+# ----------------------- Set the Weights only as False in torch.load (In Pytorch 2.6, this is default as True)-----------------------
+from deepspeed.runtime.checkpoint_engine.torch_checkpoint_engine import TorchCheckpointEngine
+from deepspeed.utils import logger, log_dist
+def weigths_only_load(self, path: str, map_location=None):
+    logger.info(f"[Torch] Loading checkpoint from {path}...")
+    partition = torch.load(path, map_location=map_location, weights_only=False)
+    logger.info(f"[Torch] Loaded checkpoint from {path}.")
+    return partition
+
+def monkey_patch_torch_load():
+    TorchCheckpointEngine.load = weigths_only_load
+
+
 

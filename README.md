@@ -24,27 +24,29 @@ Specifically, for the task of Referring Expression Comprehension (REC), we train
 
 This repository supports:
 
-- **`Full Fine-tuning for GRPO`**: see [run_grpo_rec.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec.sh)
+- **`Full Fine-tuning for GRPO`**: see [run_grpo_rec.sh](run_scripts/run_grpo_rec.sh)
 - **`Freeze Vision Modules`**: set `freeze_vision_modules` as `true` in the script.
-- **`LoRA Fine-tuning for GRPO`**: see [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh)
-- **`Multi-node Training`**: see [multinode_training_demo.sh](src/open-r1-multimodal/run_scripts/multinode_training_demo.sh)
-- **`Multi-image Input Training`**: see [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh)
+- **`LoRA Fine-tuning for GRPO`**: see [run_grpo_rec_lora.sh](run_scripts/run_grpo_rec_lora.sh)
+- **`Multi-node Training`**: see [multinode_training_demo.sh](run_scripts/multinode_training_demo.sh)
+- **`Multi-image Input Training`**: see [run_grpo_gui.sh](run_scripts/run_grpo_gui.sh)
 - **`For your own data`**: see [here](#for-your-own-data)
-- **`Support various VLMs`**: see [How to add a new model](assets/add_new_model.md), now we support QwenVL and InternVL
+- **`Various VLMs`**: see [How to add a new model](assets/add_new_model.md), now we support QwenVL and InternVL
 
 ## 🗞️ Update
 
+- **`2025-04-16`**: Thanks @MoonHoplite for the solution, now zero2 training is supported.
+- **`2025-04-16`**: We update the codebase. Currently, we incorporate REC conducting into the  [`grpo_jsonl.py`](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py) for the unify implementation. Moreover, we add a parameter `is_reward_customized_from_vlm_module` to support customized reward function from the VLM module. If this is set to `true`, the reward function will be implemented in the [QwenVL2Module](src/open-r1-multimodal/src/open_r1/vlm_modules/qwen_module.py) or [InternVLModule](src/open-r1-multimodal/src/open_r1/vlm_modules/internvl_module.py) (depends on the model you use). Besides, the current training log could output more detailed information.
 - **`2025-04-11`**: 🔥🔥🔥 We release the [technical report](https://arxiv.org/abs/2504.07615) of VLM-R1, summarizing our main results and insights.
 - **`2025-04-03`**: We add the `odLength`, `weighted_sum`, and `cosine` reward used in OVD task, please refer our [blog post](https://om-ai-lab.github.io/2025_03_20.html) and [findings](https://om-ai-lab.github.io/2025_03_24.html) to the details of the reward usage and see [grpo_jsonl.py](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py) for code implementation.
 - **`2025-03-24`**: 🔥 We release the [findings](https://om-ai-lab.github.io/2025_03_24.html) of VLM-R1-OVD.
 - **`2025-03-23`**: 🔥 We release the VLM-R1-OVD [model weights](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321) and [demo](https://huggingface.co/spaces/omlab/VLM-R1-OVD), which shows the state-of-the-art performance on OVDEval. Welcome to use it.
 - **`2025-03-20`**: 🔥 We achieved SOTA results on [OVDEval](https://github.com/om-ai-lab/OVDEval) with our RL-based model, outperforming SFT baselines and specialized object detection models. Read our [blog post](https://om-ai-lab.github.io/2025_03_20.html) for details on how reinforcement learning enhances object detection performance.
 - **`2025-03-17`**: Our VLM-R1 Math model reaches the top of the [Open-Compass Math Leaderboard](https://rank.opencompass.org.cn/leaderboard-multimodal-reasoning/?m=REALTIME) (under 4B parameters). We have released the [checkpoint](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305).
-- **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data). We also provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh), see [here](#for-your-own-data) for details.
-- **`2025-03-13`**: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
-- **`2025-03-02`**: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](src/open-r1-multimodal/run_scripts/run_grpo_rec_lora.sh) for details.
+- **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data). We also provide an example of multi-image script [run_grpo_gui.sh](run_scripts/run_grpo_gui.sh), see [here](#for-your-own-data) for details.
+- **`2025-03-13`**: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
+- **`2025-03-02`**: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](run_scripts/run_grpo_rec_lora.sh) for details.
 - **`2025-02-27`**: We support the `number of iterations per batch` and `epsilon value for clipping` in the original GRPO algorithm with args: `--num_iterations` and `--epsilon`.
-- **`2025-02-25`**: We support multi-node training for GRPO. See [multinode_training_demo.sh](src/open-r1-multimodal/run_scripts/multinode_training_demo.sh) for details.
+- **`2025-02-25`**: We support multi-node training for GRPO. See [multinode_training_demo.sh](run_scripts/multinode_training_demo.sh) for details.
 - **`2025-02-21`**: We release the [checkpoint](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps) of the VLM-R1 REC model.
 - **`2025-02-20`**: We release the script for [general data loading](#for-your-own-data).
 - **`2025-02-19`**: We incorporate an explanation of the [SFT](#sft) method.
@@ -92,51 +94,19 @@ bash setup.sh
 
 1. Download the [COCO Train2014 image](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/train2014.zip) and unzip it, and we refer to the image dir as `<your_image_root>`.
 2. Download the [RefCOCO/+/g and LISA-Grounding Annotation files](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_processed.zip) and unzip it (LISA-Grounding is used for out-of-domain evaluation).
-3. Write the path of the annotation files in the `src/open-r1-multimodal/data_config/rec.yaml` file.
+3. Change the `data_paths` and `image_folders` in the [run_scripts/run_grpo_rec.sh](run_scripts/run_grpo_rec.sh) file.
 
 ```bash
-datasets:
-    - json_path: /path/to/refcoco_train.json
-    - json_path: /path/to/refcocop_train.json
-    - json_path: /path/to/refcocog_train.json
+# These jsonl files are included in the annotation files at step 2.
+# Note: please use jsonl files instead of json files.
+data_paths="path/to/refcoco_train.jsonl:path/to/refcocop_train.jsonl:path/to/refcocog_train.jsonl"
+image_folders="path/to/coco:path/to/coco:path/to/coco"
 ```
 
-4. ``bash src/open-r1-multimodal/run_scripts/run_grpo_rec.sh``
+4. ``bash run_scripts/run_grpo_rec.sh``
 
 > [!NOTE]
-> If you encounter 'CUDA out of memory' error, you can try to (1) set `gradient_checkpointing` as `true`, (2) reduce the `per_device_train_batch_size`, or (3) use lora.
-
-```bash
-cd src/open-r1-multimodal
-
-torchrun --nproc_per_node="8" \
-    --nnodes="1" \
-    --node_rank="0" \
-    --master_addr="127.0.0.1" \
-    --master_port="12346" \
-    src/open_r1/grpo_rec.py \
-    --deepspeed local_scripts/zero3.json \
-    --output_dir output/$RUN_NAME \
-    --model_name_or_path Qwen/Qwen2.5-VL-3B-Instruct \
-    --dataset_name data_config/rec.yaml \
-    --image_root <your_image_root> \
-    --max_prompt_length 1024 \
-    --num_generations 8 \
-    --per_device_train_batch_size 8 \
-    --gradient_accumulation_steps 2 \
-    --logging_steps 1 \
-    --bf16 \
-    --torch_dtype bfloat16 \
-    --data_seed 42 \
-    --report_to wandb \
-    --gradient_checkpointing false \
-    --attn_implementation flash_attention_2 \
-    --num_train_epochs 2 \
-    --run_name $RUN_NAME \
-    --save_steps 100 \
-    --save_only_model true \
-    --freeze_vision_modules false # If you want to only finetune the language model, set this to true.
-```
+> If you encounter 'CUDA out of memory' error, you can try to reduce the `per_device_train_batch_size`.
 
 <div align="center">
 <img src="./assets/iou.jpg" width="750"/>
@@ -170,7 +140,7 @@ llamafactory-cli train examples/train_full/qwen2_5_vl_full_sft.yaml
 
 <div style="text-align: justify;">
 
-We also support data loading the jsonl data of this format in [`src/open-r1-multimodal/src/open_r1/grpo_jsonl.py`](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py). Please note that you may need to use different reward functions for your specialized tasks. Welcome to PR to add your own reward functions or share any other interesting findings!
+We support data loading the jsonl data of this format in [`src/open-r1-multimodal/src/open_r1/grpo_jsonl.py`](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py). Please note that you may need to use different reward functions for your specialized tasks. Welcome to PR to add your own reward functions or share any other interesting findings!
 
 </div>
 
@@ -217,6 +187,7 @@ Multiple data files and image folders can be specified using ":" as a separator:
 The script can be run like this:
 
 ```bash
+# You could refer to the run_grpo_rec.sh for the example
 torchrun --nproc_per_node="8" \
     --nnodes="1" \
     --node_rank="0" \
@@ -225,19 +196,19 @@ torchrun --nproc_per_node="8" \
   src/open_r1/grpo_jsonl.py \
     --output_dir output/$RUN_NAME \
     --model_name_or_path Qwen/Qwen2.5-VL-3B-Instruct \
-    --deepspeed local_scripts/zero3.json \
-    --dataset_name <your_dataset_name> \
+    --deepspeed ${REPO_HOME}/src/open-r1-multimodal/local_scripts/zero3.json \
     --data_file_paths /path/to/your/data.jsonl \ # can be multiple, separated by ":"
-    --image_folders /path/to/your/image/folder/ \ # can be multiple, separated by ":"
+    --image_folders /path/to/your/image/folder \ # can be multiple, separated by ":"
     ...
 ```
 
 <div style="text-align: justify;">
 
+### Multi-image Input
 We provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh). This task requires the model to analyze two GUI screenshots, taken before and after a user action, to determine if any UI interaction defects are present, which is from [GUI-Testing-Arena](https://huggingface.co/datasets/songjah/GTArena-UI-Defects). Download the [image](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/gui_multi-image.zip) and unzip it into the `/path/to/images/`. Then modify the `image_folders` parameter in the script and run it.
 
 ```bash
-bash src/open-r1-multimodal/run_scripts/run_grpo_gui.sh
+bash run_scripts/run_grpo_gui.sh
 ```
 
 </div>
@@ -252,8 +223,8 @@ bash src/open-r1-multimodal/run_scripts/run_grpo_gui.sh
 cd ./src/eval
 
 # Remember to change the model path, image root, and annotation path in the script
-torchrun --nproc_per_node="X" test_rec_r1.py # for GRPO. 'X' is the number of GPUs you have.
-torchrun --nproc_per_node="X" test_rec_baseline.py # for SFT.
+torchrun --nproc_per_node=X test_rec_r1.py # for GRPO. 'X' is the number of GPUs you have.
+torchrun --nproc_per_node=X test_rec_baseline.py # for SFT.
 ```
 
 ## 🤝 Acknowledgements

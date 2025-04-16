@@ -68,6 +68,16 @@ class Qwen2VLModule(VLMBaseModule):
         match task_type:
             case "rec":
                 return "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. Output the final answer in JSON format."
+            case "ic":
+                return "{Question} First thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> json format answer here </answer>"
+            case "odLength":
+                SYSTEM_PROMPT = (
+                    #"A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
+                    "First thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
+                    "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
+                    "<think> reasoning process here </think><answer> answer here </answer>"
+                )
+                return SYSTEM_PROMPT + '\n' + "{Question}"
             case _:
                 return "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags."
             
@@ -75,23 +85,29 @@ class Qwen2VLModule(VLMBaseModule):
     def format_reward_rec(completions, **kwargs):
         """Check if the Qwen model output matches a specific format."""
         import re
+        import os
+        from datetime import datetime
         pattern = r"<think>.*?</think>\s*<answer>.*?\{.*\[\d+,\s*\d+,\s*\d+,\s*\d+\].*\}.*?</answer>"
         completion_contents = [completion[0]["content"] for completion in completions]
         matches = [re.search(pattern, content, re.DOTALL) is not None for content in completion_contents]
+
+        current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+        if os.getenv("DEBUG_MODE") == "true":
+            log_path = os.getenv("LOG_PATH")
+            with open(log_path.replace(".txt", "_format.txt"), "a", encoding='utf-8') as f:
+                f.write(f"------------- {current_time} Format reward -------------\n")
+                for content, match in zip(completion_contents, matches):
+                    f.write(f"Content: {content}\n")
+                    f.write(f"Has format: {bool(match)}\n")
         return [1.0 if match else 0.0 for match in matches]
     
-    def format_reward(completions, **kwargs):
-        pattern = r"<think>.*?</think>\s*<answer>.*?\[.*?{\"bbox_2d\":\s*\[\s*\d+,\s*\d+,\s*\d+,\s*\d+\s*\]\s*,\s*\"label\":\s*\".*?\"\s*}.*?\].*?</answer>"
-        completion_contents = [completion[0]["content"] for completion in completions]
-        matches = [re.search(pattern, content, re.DOTALL) is not None for content in completion_contents]
-        return [1.0 if match else 0.0 for match in matches]
-        
     @staticmethod
     def iou_reward(completions, solution, **kwargs):
         """Calculate IoU reward between predicted bounding box from Qwen model and ground truth bounding box."""
         import re
         import os
         from datetime import datetime
+        import json
         def iou(box1, box2):
             inter_x1 = max(box1[0], box2[0])
             inter_y1 = max(box1[1], box2[1])
@@ -109,6 +125,8 @@ class Qwen2VLModule(VLMBaseModule):
         answer_tag_pattern = r'<answer>(.*?)</answer>'
         bbox_pattern = r'\[(\d+),\s*(\d+),\s*(\d+),\s*(\d+)]'
         for content, sol in zip(contents, solution):
+            sol = re.findall(answer_tag_pattern, sol, re.DOTALL)[-1]
+            sol = json.loads(sol.strip())
             reward = 0.0
             # Try symbolic verification first
             try:
@@ -127,9 +145,31 @@ class Qwen2VLModule(VLMBaseModule):
             rewards.append(reward)
             if os.getenv("DEBUG_MODE") == "true":
                 log_path = os.getenv("LOG_PATH")
-                # local_rank = int(os.getenv("LOCAL_RANK", 0))
-                with open(log_path, "a", encoding='utf-8') as f:
-                    f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
-                    f.write(f"Content: {content}\n")
-                    f.write(f"Solution: {sol}\n")
+                current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+                image_path = kwargs.get("image_path")[0] if "image_path" in kwargs else None
+                problem = kwargs.get("problem")[0]
+                if reward <= 1.0:  # this condition can be changed for debug
+                    with open(log_path, "a", encoding='utf-8') as f:
+                        f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
+                        f.write(f"image_path: {image_path}\n")
+                        f.write(f"problem: {problem}\n")
+                        f.write(f"Content: {content}\n")
+                        f.write(f"Solution: {sol}\n") 
         return rewards
+
+    @staticmethod
+    def select_reward_func(func: str, task_type: str):
+        if func == "accuracy":
+            match task_type:
+                case "rec":
+                    return Qwen2VLModule.iou_reward
+                case _:
+                    raise ValueError(f"Unsupported reward function: {func}")
+        elif func == "format":
+            match task_type:
+                case "rec":
+                    return Qwen2VLModule.format_reward_rec
+                case _:
+                    raise ValueError(f"Unsupported reward function: {func}")
+        else:
+            raise ValueError(f"Unsupported reward function: {func}")

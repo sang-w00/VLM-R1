@@ -36,8 +36,6 @@ from json_repair import repair_json
 
 from open_r1.vlm_modules import *
 
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionFlashAttention2, apply_rotary_pos_emb_flashatt, flash_attn_varlen_func
-import torch
 from typing import Tuple
 from transformers.utils import logging
 from transformers import AutoProcessor, AutoTokenizer
@@ -51,10 +49,9 @@ client = OpenAI(
     base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 )
 
-from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward
+from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward, monkey_patch_torch_load
 monkey_patch_qwen2_5vl_flash_attn()    
-
-
+monkey_patch_torch_load()
 
 tokenizer = None
 
@@ -106,6 +103,14 @@ class GRPOScriptArguments(ScriptArguments):
         metadata={
             "help": "Choose reward method: 'default', 'mcp', ..."
         },
+    )
+    task_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "Choose task type: 'default', 'gui', ..."},
+    )
+    is_reward_customized_from_vlm_module: bool = field(
+        default=False,
+        metadata={"help": "Whether to use a customized reward from vlm module"},
     )
 
 def extract_choice(text):
@@ -768,6 +773,11 @@ def clean_text(text, exclue_chars=['\n', '\r']):
     # Remove leading and trailing spaces and convert to lowercase
     return text.strip().rstrip('.').lower()
 
+def all_match_reward(content, sol, **kwargs):
+    content = clean_text(content)
+    sol = clean_text(sol)
+    return 1.0 if content == sol else 0.0
+
 def default_accuracy_reward(content, sol, **kwargs):
     reward = 0.0
         # Extract answer from solution if it has think/answer tags
@@ -845,6 +855,8 @@ def accuracy_reward(completions, solution, **kwargs):
             reward = od_reward(content, sol, score_type=1)
         elif accu_reward_method == 'odLength':
             reward = odLength_reward(content, sol)
+        elif accu_reward_method == 'all_match':
+            reward = all_match_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
@@ -916,10 +928,13 @@ def main(script_args, training_args, model_args):
     # Load the VLM module
     vlm_module_cls = get_vlm_module(model_args.model_name_or_path)
     print("using vlm module:", vlm_module_cls.__name__)
-    question_prompt = vlm_module_cls.get_question_template(task_type="default")
+    question_prompt = vlm_module_cls.get_question_template(task_type=script_args.task_type)
 
-    # Get reward functions
-    reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
+    # Get reward functions 
+    if script_args.is_reward_customized_from_vlm_module:
+        reward_funcs = [vlm_module_cls.select_reward_func(func, script_args.task_type) for func in script_args.reward_funcs]
+    else:
+        reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     print("reward_funcs:", reward_funcs)
 
     # Load the JSONL datasets
@@ -977,6 +992,7 @@ def main(script_args, training_args, model_args):
 
     def make_conversation_from_jsonl(example):
         if 'image_path' in example and example['image_path'] is not None:
+            assert all(os.path.exists(p) for p in example['image_path']), f"Image paths do not exist: {example['image_path']}"
             # Don't load image here, just store the path
             return {
                 'image_path': [p for p in example['image_path']],  # Store path instead of loaded image
@@ -1033,6 +1049,7 @@ def main(script_args, training_args, model_args):
         attn_implementation=model_args.attn_implementation,
         max_pixels=script_args.max_pixels,
         min_pixels=script_args.min_pixels,
+        max_anyres_num=script_args.max_anyres_num,
     )
 
     # Train and push the model to the Hub
