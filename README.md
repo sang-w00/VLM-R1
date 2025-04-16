@@ -98,6 +98,7 @@ bash setup.sh
 
 ```bash
 # These jsonl files are included in the annotation files at step 2.
+# Note: please use jsonl files instead of json files.
 data_paths="path/to/refcoco_train.jsonl:path/to/refcocop_train.jsonl:path/to/refcocog_train.jsonl"
 image_folders="path/to/coco:path/to/coco:path/to/coco"
 ```
