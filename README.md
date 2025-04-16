@@ -97,9 +97,9 @@ bash setup.sh
 3. Change the `data_paths` and `image_folders` in the [run_scripts/run_grpo_rec.sh](run_scripts/run_grpo_rec.sh) file.
 
 ```bash
-datasets:
-    data_paths="path/to/refcoco_train.jsonl:path/to/refcocop_train.jsonl:path/to/refcocog_train.jsonl"
-    image_folders="path/to/coco:path/to/coco:path/to/coco"
+# These jsonl files are included in the annotation files at step 2.
+data_paths="path/to/refcoco_train.jsonl:path/to/refcocop_train.jsonl:path/to/refcocog_train.jsonl"
+image_folders="path/to/coco:path/to/coco:path/to/coco"
 ```
 
 4. ``bash run_scripts/run_grpo_rec.sh``
