@@ -1,5 +1,3 @@
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
-from qwen_vl_utils import process_vision_info
 import torch
 import json
 from tqdm import tqdm
@@ -7,11 +5,11 @@ import re
 import os
 from pprint import pprint
 import random
-
+from transformers import AutoTokenizer, AutoProcessor, AutoModelForCausalLM
+from open_r1.vlm_modules.internvl_module import InvernVLModule
 
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-import argparse
 
 import warnings
 
@@ -33,41 +31,46 @@ device = f"cuda:{local_rank}"
 print(f"Process {rank} using {device}")
 
 main_rank = 0
-steps = 100
+steps = 300
 if rank == main_rank:
     print("Steps: ", steps)
 
-RUN_NAME = "Qwen2.5-VL-3B-Instruct-rec"
+RUN_NAME = "InternVL2_5-4B_MPO-rec"
 
-MODEL_PATH=f"/training/shz/project/vlm-r1/VLM-R1/checkpoints/rl/{RUN_NAME}/checkpoint-{steps}"
+MODEL_PATH=f"/training/shz/project/vlm-r1/VLM-R1/checkpoints/rl/{RUN_NAME}/checkpoint-{steps}" 
 OUTPUT_PATH="./logs/rec_results_{DATASET}_{RUN_NAME}_{STEPS}.json"
 
-BSZ=2   
-DATA_ROOT = "/training/shz/dataset/vlm-r1/rec_jsons_processed"
+BSZ=4
+DATA_ROOT = "/training/shz/dataset/vlm-r1/rec_jsons_internvl"
 
 # TEST_DATASETS = ['refcoco_val', 'refcocop_val', 'refcocog_val']
 # IMAGE_ROOT = "/training/shz/dataset/coco"
 
-
 TEST_DATASETS = ['lisa_test']
 IMAGE_ROOT = "/training/shz/dataset/lisa"
 
+random.seed(42)
 
-#We recommend enabling flash_attention_2 for better acceleration and memory saving, especially in multi-image and video scenarios.
-model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+vlm_module = InvernVLModule()
+
+model = vlm_module.get_model_class(MODEL_PATH, {}).from_pretrained(
     MODEL_PATH,
     torch_dtype=torch.bfloat16,
-    attn_implementation="flash_attention_2",
-    device_map={"": local_rank}, 
+    device_map={"": local_rank},
+    trust_remote_code=True,
+    use_flash_attn=True,
 )
 
-# default processer
-processor = AutoProcessor.from_pretrained(MODEL_PATH)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+tokenizer.pad_token_id = tokenizer.eos_token_id
+model.generation_config.pad_token_id = tokenizer.pad_token_id
+vlm_module.post_model_init(model, tokenizer)
+
 
 def extract_bbox_answer(content):
     # Try to find the bbox within <answer> tags, if can not find, return [0, 0, 0, 0]
     answer_tag_pattern = r'<answer>(.*?)</answer>'
-    bbox_pattern = r'\{.*\[(\d+),\s*(\d+),\s*(\d+),\s*(\d+)]\s*.*\}'
+    bbox_pattern = r'\[(\d+),\s*(\d+),\s*(\d+),\s*(\d+)]'
     content_answer_match = re.search(answer_tag_pattern, content, re.DOTALL)
     if content_answer_match:
         content_answer = content_answer_match.group(1).strip()
@@ -89,17 +92,27 @@ def iou(box1, box2):
     union = (box1[2]-box1[0])*(box1[3]-box1[1]) + (box2[2]-box2[0])*(box2[3]-box2[1]) - inter
     return float(inter)/union
 
-num_samples = 2000
+from PIL import Image
+def process_vision_info(batch_messages):
+    images = []
+    for msg in batch_messages:
+        image_path = msg[0]['content'][0]['image'].replace("file://", "")
+        image = Image.open(image_path)
+        images.append(image)
+    return images
+
+
+sample_num = 2000
+tokenizer.max_anyres_num = 12
 for ds in TEST_DATASETS:
-    if rank == 0:
+    if rank == main_rank:
         print(f"Processing {ds}...")
     ds_path = os.path.join(DATA_ROOT, f"{ds}.json")
     data = json.load(open(ds_path, "r"))
     random.seed(42)
     random.shuffle(data)
-    data = data[:num_samples]
-
-    QUESTION_TEMPLATE = "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. Output the final answer in JSON format."
+    data = data[:sample_num]
+    QUESTION_TEMPLATE = "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags."
 
     # Split data for distributed evaluation
     per_rank_data = len(data) // world_size
@@ -108,7 +121,6 @@ for ds in TEST_DATASETS:
     rank_data = data[start_idx:end_idx]
 
     messages = []
-
     for x in rank_data:
         image_path = os.path.join(IMAGE_ROOT, x['image'])
         message = [
@@ -127,40 +139,27 @@ for ds in TEST_DATASETS:
             ]
         }]
         messages.append(message)
-
+    
     rank_outputs = [] # List to store answers for this rank
     all_outputs = []  # List to store all answers
 
     # Process data
     for i in tqdm(range(0, len(messages), BSZ), disable=rank != main_rank):
         batch_messages = messages[i:i + BSZ]
-    
-        # Preparation for inference
-        text = [processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True) for msg in batch_messages]
-        
-        image_inputs, video_inputs = process_vision_info(batch_messages)
-        inputs = processor(
-            text=text,
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            padding_side="left",
-            return_tensors="pt",
-        )
-        inputs = inputs.to(device)
+        prompts = vlm_module.prepare_prompt(None, [{"prompt": msg} for msg in batch_messages])
 
-        # Inference: Generation of the output
-        generated_ids = model.generate(**inputs, use_cache=True, max_new_tokens=256, do_sample=False)
-        
-        generated_ids_trimmed = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        batch_output_text = processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        images = process_vision_info(batch_messages)
+
+        model_inputs = vlm_module.prepare_model_inputs(tokenizer, prompts, images)
+        model_inputs['pixel_values'] = model_inputs['pixel_values'].to(torch.bfloat16)
+        model_inputs = model_inputs.to(device)
+
+        outputs = model.generate(**{k:v for k,v in model_inputs.items() if k not in vlm_module.get_non_generate_params()}, max_new_tokens=1024, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+        batch_output_text = tokenizer.batch_decode(
+            outputs, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
-        
         rank_outputs.extend(batch_output_text)
-
+    
     print(f"Rank {rank} has finished processing {len(rank_outputs)} examples")
 
     # Gather all outputs from all ranks
@@ -190,9 +189,8 @@ for ds in TEST_DATASETS:
             
             # Count correct answers
             correct = 0
-            if model_answer is not None:
-                if iou(model_answer, ground_truth) > 0.5:
-                    correct = 1
+            if model_answer is not None and iou(model_answer, ground_truth) > 0.5:
+                correct = 1
             correct_number += correct
             
             # Create a result dictionary for this example
@@ -219,7 +217,7 @@ for ds in TEST_DATASETS:
             json.dump({
                 'accuracy': accuracy,
                 'results': final_output
-            }, f, indent=2)
+            }, f, indent=4)
 
         print(f"Results saved to {output_path}")
         print("-"*100)

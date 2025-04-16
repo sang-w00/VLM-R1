@@ -45,7 +45,7 @@ from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_c
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import generate_model_card, get_comet_experiment_url
-from trl import GRPOTrainer
+# from trl import GRPOTrainer
 
 from accelerate.utils import is_peft_model, set_seed
 import PIL.Image
@@ -247,10 +247,7 @@ class VLMGRPOTrainer(Trainer):
                 "Invalid `torch_dtype` passed to `GRPOConfig`. Expected either 'auto' or a string representing "
                 f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
             )
-        model_init_kwargs["use_cache"] = (
-            False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
-        )
-            # Disable caching if gradient checkpointing is enabled (not supported)
+        # Disable caching if gradient checkpointing is enabled (not supported)
         model_init_kwargs["use_cache"] = (
             False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
         )
@@ -260,6 +257,7 @@ class VLMGRPOTrainer(Trainer):
         # LoRA
         self.vision_modules_keywords = self.vlm_module.get_vision_modules_keywords()
         if peft_config is not None:
+            print("Applying LoRA...")
             def find_all_linear_names(model, multimodal_keywords):
                 cls = torch.nn.Linear
                 lora_module_names = set()
@@ -283,22 +281,35 @@ class VLMGRPOTrainer(Trainer):
             for n, p in model.named_parameters():
                 if any(keyword in n for keyword in self.vision_modules_keywords):
                     p.requires_grad = False
-
+        # Compute the number of trainable parameters and print the parameter that is trainable
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        total_params = sum(p.numel() for p in trainable_params)
+        # for n, p in model.named_parameters():
+        #     if p.requires_grad:
+        #         print(n, p.shape)
+        print(f"Total trainable parameters: {total_params}")
+        print('args.gradient_checkpointing', args.gradient_checkpointing)
         # Enable gradient checkpointing if requested
         if args.gradient_checkpointing:
             model = self._enable_gradient_checkpointing(model, args)
+        print('use_cache_model', model.language_model.config.use_cache)
 
         # Reference model
-        if is_deepspeed_zero3_enabled():
-            self.ref_model = model_cls.from_pretrained(model_id, **model_init_kwargs)
-        elif peft_config is None:
-            # If PEFT configuration is not provided, create a reference model based on the initial model.
-            self.ref_model = create_reference_model(model)
-        else:
+        self.beta = args.beta
+        if self.beta == 0.0:
+            # If beta is 0.0, the reference model is not needed
+            self.ref_model = None
+        elif is_deepspeed_zero3_enabled():
+            self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
+        elif is_peft_model(model):
             # If PEFT is used, the reference model is not needed since the adapter can be disabled
             # to revert to the initial model.
             self.ref_model = None
-            
+        else:
+            # If PEFT configuration is not provided, create a reference model based on the initial model.
+            self.ref_model = create_reference_model(model)
+        print('use_cache_ref_model', self.ref_model.language_model.config.use_cache)
+
         # Processing class
         if processing_class is None:
             processing_cls = self.vlm_module.get_processing_class()
@@ -370,7 +381,6 @@ class VLMGRPOTrainer(Trainer):
         )
         if hasattr(self.vlm_module, "get_eos_token_id"): # For InternVL
             self.generation_config.eos_token_id = self.vlm_module.get_eos_token_id(processing_class)
-            print(222, self.vlm_module.get_eos_token_id(processing_class))
         self.beta = args.beta
         self.epsilon_low = args.epsilon
         self.epsilon_high = args.epsilon_high if args.epsilon_high is not None else args.epsilon
@@ -435,7 +445,8 @@ class VLMGRPOTrainer(Trainer):
         self.model_accepts_loss_kwargs = False
 
         if self.ref_model is not None:
-            if self.is_deepspeed_enabled:
+            # if self.is_deepspeed_enabled:
+            if is_deepspeed_zero3_enabled():
                 self.ref_model = prepare_deepspeed(self.ref_model, self.accelerator)
             else:
                 self.ref_model = self.accelerator.prepare_model(self.ref_model, evaluation_mode=True)
@@ -454,9 +465,8 @@ class VLMGRPOTrainer(Trainer):
             model.base_model.gradient_checkpointing_enable()
         # Enable gradient checkpointing for non-PEFT models
         else:
+            model.gradient_checkpointing_enable()
             try:
-                model.gradient_checkpointing_enable()
-            except:
                 # For InternVL; these operations are copied from the original training script of InternVL
                 model.language_model.config.use_cache = False
                 model.vision_model.gradient_checkpointing = True
@@ -464,6 +474,8 @@ class VLMGRPOTrainer(Trainer):
                 model.language_model._set_gradient_checkpointing()
                 # This line is necessary, otherwise the `model.gradient_checkpointing_enable()` will be executed during the training process, leading to an error since InternVL does not support this operation.
                 args.gradient_checkpointing = False
+            except:
+                pass
 
         gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
         use_reentrant = (
@@ -521,6 +533,8 @@ class VLMGRPOTrainer(Trainer):
                 imgs = self._get_key_from_inputs(x, "image")
             elif "image_path" in x and x["image_path"] is not None:
                 imgs = [PIL.Image.open(p) for p in self._get_key_from_inputs(x, "image_path")]
+            else:
+                imgs = []
 
             for img in imgs:
                 try:
@@ -550,7 +564,6 @@ class VLMGRPOTrainer(Trainer):
             add_special_tokens=False,
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
-
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
 

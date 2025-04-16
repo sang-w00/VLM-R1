@@ -53,7 +53,7 @@ class InvernVLModule(VLMBaseModule):
     def get_eos_token_id(self, processing_class):
         eos_token_id = processing_class.convert_tokens_to_ids(self.conv_template.sep.strip())
         return eos_token_id
-
+        
     def get_vision_modules_keywords(self):
         return ['vision_model']
 
@@ -121,6 +121,7 @@ class InvernVLModule(VLMBaseModule):
         model_inputs['image_flags'] = torch.ones(full_pixel_values.shape[0], dtype=torch.long)
         
         model_inputs = BatchFeature(data=model_inputs)
+
         return model_inputs
 
     def _load_image(self, image: Image.Image, input_size: int=448, max_num:int=12):
@@ -140,9 +141,19 @@ class InvernVLModule(VLMBaseModule):
     def format_reward_rec(completions, **kwargs):
         """Check if the InternVL model output matches a specific format."""
         import re
+        import os
+        from datetime import datetime
         pattern = r"<think>.*?</think>\s*<answer>.*?\[\d+,\s*\d+,\s*\d+,\s*\d+\].*?</answer>"
         completion_contents = [completion[0]["content"] for completion in completions]
         matches = [re.search(pattern, content, re.DOTALL) is not None for content in completion_contents]
+        current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+        if os.getenv("DEBUG_MODE") == "true":
+            log_path = os.getenv("LOG_PATH")
+            with open(log_path.replace(".txt", "_format.txt"), "a", encoding='utf-8') as f:
+                f.write(f"------------- {current_time} Format reward -------------\n")
+                for content, match in zip(completion_contents, matches):
+                    f.write(f"Content: {content}\n")
+                    f.write(f"Has format: {bool(match)}\n")
         return [1.0 if match else 0.0 for match in matches]
         
     @staticmethod
@@ -151,6 +162,7 @@ class InvernVLModule(VLMBaseModule):
         """Adopt soft iou reward here"""
         import re
         import os
+        import json
         from datetime import datetime
         def iou(box1, box2):
             inter_x1 = max(box1[0], box2[0])
@@ -169,6 +181,8 @@ class InvernVLModule(VLMBaseModule):
         answer_tag_pattern = r'<answer>(.*?)</answer>'
         bbox_pattern = r'\[(\d+),\s*(\d+),\s*(\d+),\s*(\d+)]'
         for content, sol in zip(contents, solution):
+            sol = re.findall(answer_tag_pattern, sol, re.DOTALL)[-1]
+            sol = json.loads(sol.strip())
             reward = 0.0
             # Try symbolic verification first
             try:
@@ -185,12 +199,34 @@ class InvernVLModule(VLMBaseModule):
             rewards.append(reward)
             if os.getenv("DEBUG_MODE") == "true":
                 log_path = os.getenv("LOG_PATH")
-                # local_rank = int(os.getenv("LOCAL_RANK", 0))
-                with open(log_path, "a", encoding='utf-8') as f:
-                    f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
-                    f.write(f"Content: {content}\n")
-                    f.write(f"Solution: {sol}\n")
+                current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+                image_path = kwargs.get("image_path")[0] if "image_path" in kwargs else None
+                problem = kwargs.get("problem")[0]
+                if reward <= 1.0:  # this condition can be changed for debug
+                    with open(log_path, "a", encoding='utf-8') as f:
+                        f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
+                        f.write(f"image_path: {image_path}\n")
+                        f.write(f"problem: {problem}\n")
+                        f.write(f"Content: {content}\n")
+                        f.write(f"Solution: {sol}\n") 
         return rewards
+    
+    @staticmethod
+    def select_reward_func(func: str, task_type: str):
+        if func == "accuracy":
+            match task_type:
+                case "rec":
+                    return InvernVLModule.iou_reward
+                case _:
+                    raise ValueError(f"Unsupported reward function: {func}")
+        elif func == "format":
+            match task_type:
+                case "rec":
+                    return InvernVLModule.format_reward_rec
+                case _:
+                    raise ValueError(f"Unsupported reward function: {func}")
+        else:
+            raise ValueError(f"Unsupported reward function: {func}")
 
 
 def process_conversation_list(conversation_list, system_message=None, image_newline=True):
