@@ -288,11 +288,10 @@ class VLMGRPOTrainer(Trainer):
         #     if p.requires_grad:
         #         print(n, p.shape)
         print(f"Total trainable parameters: {total_params}")
-        print('args.gradient_checkpointing', args.gradient_checkpointing)
+
         # Enable gradient checkpointing if requested
         if args.gradient_checkpointing:
             model = self._enable_gradient_checkpointing(model, args)
-        print('use_cache_model', model.language_model.config.use_cache)
 
         # Reference model
         self.beta = args.beta
@@ -308,7 +307,6 @@ class VLMGRPOTrainer(Trainer):
         else:
             # If PEFT configuration is not provided, create a reference model based on the initial model.
             self.ref_model = create_reference_model(model)
-        print('use_cache_ref_model', self.ref_model.language_model.config.use_cache)
 
         # Processing class
         if processing_class is None:
