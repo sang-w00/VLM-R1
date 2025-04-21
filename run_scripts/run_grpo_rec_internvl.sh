@@ -53,6 +53,6 @@ torchrun --nproc_per_node="8" \
     --beta 0.04 \
     --report_to wandb \
     --dataset-name this_is_not_used \
-    --deepspeed ${REPO_HOME}/src/open-r1-multimodal/local_scripts/zero3.json \
+    --deepspeed ${REPO_HOME}/src/open-r1-multimodal/local_scripts/zero2.json \
 
 echo "Training completed for ${EXP_NAME}"
