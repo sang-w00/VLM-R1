@@ -463,8 +463,7 @@ class VLMGRPOTrainer(Trainer):
             model.base_model.gradient_checkpointing_enable()
         # Enable gradient checkpointing for non-PEFT models
         else:
-            model.gradient_checkpointing_enable()
-            try:
+            if getattr(model, "language_model", None) is not None:
                 # For InternVL; these operations are copied from the original training script of InternVL
                 model.language_model.config.use_cache = False
                 model.vision_model.gradient_checkpointing = True
@@ -472,8 +471,8 @@ class VLMGRPOTrainer(Trainer):
                 model.language_model._set_gradient_checkpointing()
                 # This line is necessary, otherwise the `model.gradient_checkpointing_enable()` will be executed during the training process, leading to an error since InternVL does not support this operation.
                 args.gradient_checkpointing = False
-            except:
-                pass
+            else:
+                model.gradient_checkpointing_enable()
 
         gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
         use_reentrant = (
