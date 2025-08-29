@@ -34,7 +34,9 @@ This repository supports:
 
 ## 🗞️ Update
 
-- **`2025-08-22`**: We have adapted the VLM-R1 series models to Huawei Ascend Atlas 800T A2 and Atlas 300I Duo series using the vllm-ascend framework, further expanding the deployment scenarios and hardware compatibility of the model series. Please refer to [ascend_inference/910B/README.md](ascend_inference/910B/README.md) and [ascend_inference/300IDuo/README.md](ascend_inference/300IDuo/README.md) for more details.
+- **`2025-08-29`**: 🔥🔥🔥 We have further optimized the VLM-R1 series models based on JD's latest open-source inference framework `xllm` (github is [here](https://github.com/jd-opensource/xllm)). The TTFT (Time to First Token) has been reduced by 50% compared to `vllm-ascend`, and the overall throughput has increased by 127% compared to `vllm-ascend`. Please refer to [ascend_inference/910B/xllm/README.md](ascend_inference/910B/xllm/README.md) for more details.
+
+- **`2025-08-22`**: We have adapted the VLM-R1 series models to Huawei Ascend Atlas 800T A2 and Atlas 300I Duo series using the vllm-ascend framework, further expanding the deployment scenarios and hardware compatibility of the model series. Please refer to [ascend_inference/910B/vllm_ascend/README.md](ascend_inference/910B/vllm_ascend/README.md) and [ascend_inference/300IDuo/README.md](ascend_inference/300IDuo/README.md) for more details.
 
 - **`2025-06-26`**: We introduce a post-resize operation for the bounding box for QwenVL (both [training](src/open-r1-multimodal/src/open_r1/vlm_modules/qwen_module.py#L124-L129) and [evaluation](src/eval/test_rec_r1.py#L92-L97)) and the results are improved slightly.
 - **`2025-04-16`**: We have updated the codebase to improve functionality and maintain unified implementation. Specifically, the REC process is now integrated into [grpo_jsonl.py](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py) for consistency across tasks. Additionally, we introduce a new parameter, `is_reward_customized_from_vlm_module`, which enables the use of customized reward functions defined within the VLM module. When set to `true`, the reward logic is handled in either [QwenVL2Module](src/open-r1-multimodal/src/open_r1/vlm_modules/qwen_module.py) or [InternVLModule](src/open-r1-multimodal/src/open_r1/vlm_modules/internvl_module.py), depending on the selected model. Furthermore, the training log has been enhanced to provide more detailed output for easier monitoring and debugging.
@@ -79,6 +81,7 @@ This repository supports:
 - [X] Release the VLM-R1-OVD model.
 - [X] Release the technical report of VLM-R1.
 - [X] Adapt to Huawei Ascend Atlas 800T A2 and Atlas 300I Duo series using the vllm-ascend framework.
+- [X] Adapt to Huawei Ascend Atlas 800T A2 series using the xllm framework.
 - [ ] Study cross task generalization.
 - [ ] Enhance VLM for other tasks [welcome issue].
 
@@ -235,7 +238,7 @@ torchrun --nproc_per_node=X test_rec_baseline.py # for SFT.
 
 We have adapted the VLM-R1 series models to Huawei Ascend Atlas 800T A2 and Atlas 300I Duo series using the vllm-ascend framework. The specific adaptation and inference are as follows:
 
-- **Atlas 800T A2**: Please refer to [ascend_inference/910B/README.md](ascend_inference/910B/README.md)
+- **Atlas 800T A2**: Please refer to [ascend_inference/910B/vllm_ascend/README.md](ascend_inference/910B/vllm_ascend/README.md)
 - **Atlas 300I Duo**: Please refer to [ascend_inference/300IDuo/README.md](ascend_inference/300IDuo/README.md)
 
 ## 🤝 Acknowledgements
