@@ -133,3 +133,39 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
     ]
   }'
 ```
+
+## Performance
+
+We conducted performance stress testing on **VLM R1** using `evalscope`. The following is the provided `evalscope` stress testing script:  
+
+```bash
+evalscope perf \
+  --parallel 1 2 4 8 16 32 \
+  --number 4 8 16 32 64 128 \
+  --model VLM-R1-Qwen2.5VL-3B-OVD-0321 \
+  --url http://127.0.0.1:8000/v1/chat/completions \
+  --api openai \
+  --dataset random_vl \
+  --max-tokens 512 \
+  --min-tokens 512 \
+  --prefix-length 0 \
+  --min-prompt-length 100 \
+  --max-prompt-length 100 \
+  --image-width 640 \
+  --image-height 640 \
+  --image-format RGB \
+  --image-num 1 \
+  --tokenizer-path /path/VLM-R1-Qwen2.5VL-3B-OVD-0321 \
+  --extra-args '{"ignore_eos": true}'
+```  
+
+The `vllm-ascend` performance result is follow:
+
+| Conc. | RPS  | Avg Lat.(s) | P99 Lat.(s) | Gen. toks/s | Avg TTFT(s) | P99 TTFT(s) | Avg TPOT(s) | P99 TPOT(s) | Success Rate |
+|-------|------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|
+| 1     | 0.04 | 28.567      | 32.103      | 17.92       | 1.333       | 4.572       | 0.053       | 0.054       | 100.0%      |
+| 2     | 0.07 | 28.246      | 28.683      | 36.24       | 0.301       | 0.449       | 0.055       | 0.055       | 100.0%      |
+| 4     | 0.14 | 28.239      | 28.729      | 72.47       | 0.391       | 0.684       | 0.054       | 0.055       | 100.0%      |
+| 8     | 0.27 | 29.139      | 29.387      | 140.36      | 0.479       | 1.001       | 0.056       | 0.057       | 100.0%      |
+| 16    | 0.53 | 30.338      | 31.959      | 269.22      | 0.875       | 2.093       | 0.058       | 0.059       | 100.0%      |
+| 32    | 0.98 | 32.465      | 35.385      | 501.47      | 1.462       | 3.703       | 0.061       | 0.063       | 100.0%      |
