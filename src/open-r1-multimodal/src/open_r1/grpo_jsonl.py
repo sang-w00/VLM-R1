@@ -21,7 +21,8 @@ from typing import Optional
 from babel.numbers import parse_decimal
 from utils.math import compute_score
 from datasets import load_dataset, load_from_disk
-from transformers import Qwen2VLForConditionalGeneration
+from transformers import Qwen2VLForConditionalGeneration, AutoModelForVision2Seq
+import torch
 
 from math_verify import parse, verify
 from open_r1.trainer import VLMGRPOTrainer, GRPOConfig
@@ -54,6 +55,65 @@ monkey_patch_qwen2_5vl_flash_attn()
 monkey_patch_torch_load()
 
 tokenizer = None
+verifier_model = None
+verifier_processor = None
+
+VERIFIER_MODEL_PATH = os.getenv("VERIFIER_MODEL_PATH", "qwen2.5vl:3b")  # alias allowed (e.g., qwen2.5vl:3b, qwen2.5vl:7b)
+
+ALIAS_MAP = {
+    "qwen2.5vl:3b": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "qwen2.5-vl:3b": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "qwen2.5_vl:3b": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "qwen2.5vl:7b": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "qwen2.5-vl:7b": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "qwen2.5_vl:7b": "Qwen/Qwen2.5-VL-7B-Instruct",
+}
+
+def resolve_model_path(raw_path: str) -> str:
+    key = raw_path.strip().lower()
+    return ALIAS_MAP.get(key, raw_path)
+
+def initialize_verifier():
+    """Lazy load frozen verifier model (Qwen2.5-VL) for action-based accuracy reward.
+
+    환경변수 VERIFIER_MODEL_PATH 로 모델 경로 재정의 가능. 지원 alias: qwen2.5vl:3b, qwen2.5vl:7b
+    """
+    global verifier_model, verifier_processor
+    if verifier_model is None:
+        target_path = resolve_model_path(VERIFIER_MODEL_PATH)
+        tried = []
+        candidates = [target_path]
+        if 'Instruct' not in target_path and '-Instruct' not in target_path:
+            if target_path.endswith('-7B') or target_path.endswith('-3B'):
+                candidates.append(target_path + '-Instruct')
+        for cand in candidates:
+            try:
+                from transformers import AutoProcessor
+                verifier_processor = AutoProcessor.from_pretrained(cand, trust_remote_code=True)
+                # Decide which loader
+                if any(tag in cand.lower() for tag in ['2.5-vl', '2_5-vl', '2.5_vl', '2_5_vl']):
+                    loader_cls = AutoModelForVision2Seq
+                else:
+                    loader_cls = Qwen2VLForConditionalGeneration
+                verifier_model = loader_cls.from_pretrained(
+                    cand,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+                verifier_model.eval()
+                for p in verifier_model.parameters():
+                    p.requires_grad_(False)
+                print(f"[action_accuracy] Loaded verifier model: {cand} via {loader_cls.__name__}")
+                break
+            except Exception as e:
+                print(f"[action_accuracy] Failed to load {cand}: {e}")
+                tried.append(cand)
+                verifier_model = None
+                verifier_processor = None
+        if verifier_model is None:
+            print(f"[action_accuracy] All load attempts failed: {tried}")
+    return verifier_model, verifier_processor
 
 def initialize_tokenizer(model_path):
     global tokenizer
@@ -81,6 +141,14 @@ class GRPOScriptArguments(ScriptArguments):
     val_split_ratio: float = field(
         default=0.0,
         metadata={"help": "Ratio of validation split, default 0.0"},
+    )
+    val_split_seed: Optional[int] = field(
+        default=42,
+        metadata={"help": "Random seed used for train/validation split (datasets.train_test_split)."},
+    )
+    save_validation_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "If set, save validation split to this path. Use a directory for Arrow (save_to_disk) or a file ending with .jsonl/.json for JSON."},
     )
     reward_funcs: list[str] = field(
         default_factory=lambda: ["accuracy", "format"],
@@ -880,21 +948,223 @@ def accuracy_reward(completions, solution, **kwargs):
 
 
 def format_reward(completions, **kwargs):
-    """Reward function that checks if the completion has a specific format."""
-    pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
+    """Format reward with three levels:
+    - 1.0: Both <think>...</think><answer>...</answer> 태그 구조가 전체 문자열을 구성하고, <answer> 내용이 정확히 단일 문자 A 또는 B (대소문자 허용)
+    - 0.5: 태그 구조(<think> + <answer>)는 올바르게 닫혀 있고 전체 문자열이지만, <answer> 내용이 단일 A-L 문자가 아님
+    - 0.0: 위 조건을 만족하지 못함 (태그 누락, 순서 오류, 바깥 여분 텍스트 등)
+
+    허용 전체 패턴 (공백은 유연):
+        <think> ... </think><answer> X </answer>
+    여기서 X 는 단일 A 또는 B 일 때 1.0, 그 외면 0.5.
+    """
     completion_contents = [completion[0]["content"] for completion in completions]
-    matches = [re.fullmatch(pattern, content, re.DOTALL) for content in completion_contents]
+    # 1단계: 태그 구조 매칭 (answer 내용 캡쳐)
+    structure_pattern = r"<think>.*?</think>\s*<answer>\s*(.*?)\s*</answer>\s*$"
+    rewards = []
+    debug_infos = []
+    for content in completion_contents:
+        stripped = content.strip()
+        m = re.fullmatch(structure_pattern, stripped, re.DOTALL | re.IGNORECASE)
+        if not m:
+            rewards.append(0.0)
+            debug_infos.append((content, None, 0.0, 'no-structure'))
+            continue
+        answer_raw = m.group(1).strip()
+        # 단일 A 또는 B 여부 (대소문자 허용)
+        if re.fullmatch(r'[ABab]', answer_raw):
+            rewards.append(1.0)
+            debug_infos.append((content, answer_raw, 1.0, 'single-letter'))
+        else:
+            rewards.append(0.5)
+            debug_infos.append((content, answer_raw, 0.5, 'structure-only'))
 
-    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
     if os.getenv("DEBUG_MODE") == "true":
-        log_path = os.getenv("LOG_PATH")
-        with open(log_path.replace(".txt", "_format.txt"), "a", encoding='utf-8') as f:
-            f.write(f"------------- {current_time} Format reward -------------\n")
-            for content, match in zip(completion_contents, matches):
-                f.write(f"Content: {content}\n")
-                f.write(f"Has format: {bool(match)}\n")
+        current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+        log_path = os.getenv("LOG_PATH", "debug.txt")
+        try:
+            with open(log_path.replace('.txt', '_format.txt'), 'a', encoding='utf-8') as f:
+                f.write(f"------------- {current_time} Format reward -------------\n")
+                for original, ans, rew, reason in debug_infos:
+                    f.write(f"reward={rew} reason={reason} answer_raw={ans}\n")
+                    f.write(f"Content: {original}\n")
+        except Exception:
+            pass
 
-    return [1.0 if match else 0.0 for match in matches]
+    return rewards
+
+
+# ---------------- New Reward: action-based verification accuracy ---------------- #
+# (UPDATED) 선택지는 이제 A 또는 B 두 개만 사용.
+# 기존 A-L 매핑에서 축소: A -> view_01, B -> view_02 로 해석.
+# 추가 뷰가 필요 없는(이전의 'L') 개념은 더 이상 사용하지 않고, 잘못된/미존재 답은 추가 뷰 없이 진행.
+ACTION_LETTERS = {
+    'A': 1,  # view_01.png
+    'B': 2,  # view_02.png
+}
+
+def _view_index_from_path(path: str):
+    m = re.search(r'view_(\d{2})', path)
+    return int(m.group(1)) if m else None
+
+def _extract_final_answer_letter(text: str):
+    """학생 모델 출력에서 최종 액션(A 또는 B) 추출.
+
+    규칙:
+      - 마지막 <answer>...</answer> 블록을 찾는다. 없으면 None 반환 (추가 뷰 없음)
+      - 내용이 단일 문자 'A' 또는 'B' (대소문자 허용, 끝의 마침표 1개 허용) 이면 해당 대문자 반환
+      - 그 외는 None (추가 뷰 없음)
+    """
+    answer_blocks = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
+    if not answer_blocks:
+        return None
+    candidate_raw = answer_blocks[-1].strip()
+    if candidate_raw.endswith('.') and candidate_raw.count('.') == 1:
+        candidate_core = candidate_raw[:-1].strip()
+    else:
+        candidate_core = candidate_raw
+    candidate_up = candidate_core.upper()
+    return candidate_up if candidate_up in ACTION_LETTERS else None
+
+def _scene_index_from_path(path: str):
+    m = re.search(r'scene_(\d{6})', path)
+    return int(m.group(1)) if m else None
+
+def _build_additional_view(original_path: str, letter: str | None):
+    if letter is None or letter not in ACTION_LETTERS:
+        return None
+    idx = ACTION_LETTERS[letter]
+    base_dir = os.path.dirname(original_path)
+    candidate = os.path.join(base_dir, f"view_{idx:02d}.png")
+    return candidate if os.path.exists(candidate) else None
+
+def _extract_question(problem_text: str):
+    """Extract only the final natural language question.
+
+    Raw prompt format (constant preamble + final question):
+        ... long instructions ... The question is as follow: <image>How many cylinders are there?\
+
+    We want to return:
+        "How many cylinders are there?"
+
+    Assumptions:
+      - The marker phrase 'The question is as follow:' (sometimes people write 'as follows:') appears
+        exactly once near the end. We defensively take the *last* occurrence in case of noise.
+      - An optional '<image>' token may appear immediately after the marker (keep removing all leading occurrences).
+      - Trailing backslashes (dataset line continuations) should be stripped.
+    """
+    if not problem_text:
+        return ""
+
+    text = problem_text.strip()
+    # Find last occurrence of the marker (allow optional 's' in 'follows')
+    marker_regex = re.compile(r'The question is as follow[s]?\s*:\s*', re.IGNORECASE)
+    last_match = None
+    for m in marker_regex.finditer(text):
+        last_match = m
+    if last_match is None:
+        # Fallback: return stripped text (no marker found)
+        return text
+
+    question_part = text[last_match.end():].strip()
+    # Remove any leading <image> tokens (could appear multiple times theoretically)
+    question_part = re.sub(r'^(?:<image>\s*)+', '', question_part, flags=re.IGNORECASE)
+    # Remove trailing literal "\\n" sequences, stray backslashes, or quotes
+    question_part = re.sub(r'(?:\\n)+$', '', question_part)  # remove one or more literal \n at end
+    question_part = question_part.rstrip('\\').strip().strip('"').strip()
+    return question_part
+
+@torch.no_grad()
+def _verifier_answer(images: list[str], question: str):
+    model, processor = initialize_verifier()
+    if model is None or processor is None:
+        return None  # 로딩 실패 시 None 반환
+    try:
+        from PIL import Image
+        pil_images = [Image.open(p).convert('RGB') for p in images]
+        messages = [{
+            "role": "user",
+            "content": [
+                *[{"type": "image", "image": img} for img in pil_images],
+                {"type": "text", "text": f"Answer the question concisely. Question: {question}"}
+            ]
+        }]
+        chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[chat_text], images=pil_images, return_tensors="pt").to(model.device)
+        gen = model.generate(**inputs, max_new_tokens=32, do_sample=False)
+        out = processor.batch_decode(gen, skip_special_tokens=True)[0]
+        # <answer> 블록 있으면 사용, 없으면 마지막 줄 추출
+        ans_blocks = re.findall(r'<answer>(.*?)</answer>', out, re.DOTALL | re.IGNORECASE)
+        if ans_blocks:
+            ans = ans_blocks[-1].strip()
+        else:
+            ans = out.strip().split('\n')[-1].strip()
+        # 후처리: 끝 구두점 제거
+        ans = ans.rstrip('.').strip()
+        return ans
+    except Exception as e:
+        print(f"[action_accuracy] verifier inference failed: {e}")
+        return None
+
+def action_accuracy_reward(completions, solution, **kwargs):
+    """학생 출력이 선택한 액션(A-L)에 따라 추가 뷰를 선택하고, 해당 뷰(1 또는 2장)를 검증용
+    Qwen2.5-VL-7B 모델에 넣어 답을 재추론한 후 GT 와 비교하여 accuracy 점수를 부여.
+
+    Reward = default_accuracy_reward(verifier_answer, ground_truth)
+    - verifier 또는 이미지 로딩 실패 시 0.0 (보수적)
+    - 두 번째 뷰 파일이 없으면 단일 뷰로 진행
+    """
+    rewards = []
+    contents = [c[0]["content"] for c in completions]
+    # image_path: list[list[str]] 혹은 list[str]
+    image_paths_arg = kwargs.get("image_path")
+    problems_arg = kwargs.get("problem")
+    for i, (content, sol) in enumerate(zip(contents, solution)):
+        # 원본 이미지 경로 확보
+        if isinstance(image_paths_arg, list) and len(image_paths_arg) == len(contents):
+            orig_imgs = image_paths_arg[i]
+        else:
+            # 배치 구조 불명확 시 첫 요소만 활용
+            orig_imgs = image_paths_arg[0] if image_paths_arg else []
+        if isinstance(orig_imgs, str):
+            orig_imgs = [orig_imgs]
+        if not orig_imgs:
+            rewards.append(0.0)
+            continue
+        primary_img = orig_imgs[0]
+        letter = _extract_final_answer_letter(content)
+        add_view = _build_additional_view(primary_img, letter)
+        selected_images = [primary_img] + ([add_view] if add_view else [])
+        # 질문 추출
+        if isinstance(problems_arg, list) and len(problems_arg) == len(contents):
+            raw_problem = problems_arg[i]
+        else:
+            raw_problem = problems_arg[0] if problems_arg else ''
+        question = _extract_question(raw_problem)
+        verifier_ans = _verifier_answer(selected_images, question)
+        if verifier_ans is None:
+            reward = 0.0
+        else:
+            reward = default_accuracy_reward(verifier_ans, sol)
+        rewards.append(reward)
+        # Always log concise info each train step for debugging selected views
+        try:
+            sel_indices = [(_view_index_from_path(p)) for p in selected_images]
+            print(f"[action_accuracy][debug] sel_indices={sel_indices} question='{question[:80]}' verifier_ans='{verifier_ans}' gt='{sol[:80]}' reward={reward:.3f}")
+        except Exception:
+            pass
+        if os.getenv("DEBUG_MODE") == "true":
+            log_path = os.getenv("LOG_PATH", "debug_action_accuracy.txt")
+            current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+            with open(log_path.replace('.txt','_action_accuracy.txt'), 'a', encoding='utf-8') as f:
+                f.write(f"----- {current_time} action_accuracy reward: {reward} -----\n")
+                f.write(f"letter: {letter}, add_view: {add_view}\n")
+                f.write(f"selected_images: {selected_images}\n")
+                f.write(f"selected_view_indices: {sel_indices}\n")
+                f.write(f"question: {question}\n")
+                f.write(f"verifier_ans: {verifier_ans}\n")
+                f.write(f"ground_truth: {sol}\n")
+                f.write(f"student_raw: {content}\n")
+    return rewards
 
 
 reward_funcs_registry = {
@@ -902,6 +1172,7 @@ reward_funcs_registry = {
     "format": format_reward,
     "length": cosine_rewards,
     "repetition": repetition_rewards,
+    "action_accuracy": action_accuracy_reward,
 }
 
 @dataclass
@@ -1027,10 +1298,38 @@ def main(script_args, training_args, model_args):
     splits = {'train': dataset}
     if script_args.val_split_ratio > 0:
         train_val_split = dataset.train_test_split(
-            test_size=script_args.val_split_ratio
+            test_size=script_args.val_split_ratio,
+            seed=script_args.val_split_seed
         )
         splits['train'] = train_val_split['train']
         splits['validation'] = train_val_split['test']
+
+        # Optionally persist validation split
+        if script_args.save_validation_path:
+            val_ds = splits.get('validation')
+            save_path = script_args.save_validation_path
+            try:
+                if save_path.lower().endswith(".jsonl") or save_path.lower().endswith(".json"):
+                    # Prefer Dataset.to_json; fallback to manual JSONL
+                    try:
+                        # lines=True ensures JSON Lines when supported
+                        val_ds.to_json(save_path, lines=True, force_ascii=False)
+                    except Exception:
+                        import json as _json
+                        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+                        with open(save_path, 'w', encoding='utf-8') as _f:
+                            for row in val_ds:
+                                _f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+                    print(f"Saved validation split to JSON at: {save_path}")
+                else:
+                    # Treat as Arrow dataset directory
+                    os.makedirs(save_path, exist_ok=True)
+                    val_ds.save_to_disk(save_path)
+                    print(f"Saved validation split (Arrow) to: {save_path}")
+            except Exception as e:
+                print(f"[warn] Failed to save validation split to {save_path}: {e}")
+    elif script_args.save_validation_path:
+        print("[warn] save_validation_path is set but val_split_ratio == 0; no validation split to save.")
 
     # Select trainer class based on vlm_trainer argument
     trainer_cls = VLMGRPOTrainer

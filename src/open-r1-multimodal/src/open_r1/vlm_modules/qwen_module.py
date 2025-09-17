@@ -82,7 +82,7 @@ class Qwen2VLModule(VLMBaseModule):
                 )
                 return SYSTEM_PROMPT + '\n' + "{Question}"
             case _:
-                return "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags."
+                return "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. The text between <answer> and </answer> must be exactly one uppercase letter, A or B. No spaces, words, punctuation, or additional characters are allowed. If uncertain, choose the best single letter. Do not output anything after </answer>."
             
     @staticmethod
     def format_reward_rec(completions, **kwargs):
