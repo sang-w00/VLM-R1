@@ -1029,10 +1029,11 @@ def _scene_index_from_path(path: str):
     m = re.search(r'scene_(\d{6})', path)
     return int(m.group(1)) if m else None
 
-def _build_additional_view(original_path: str, letter: str | None):
-    if letter is None or letter not in ACTION_LETTERS:
+def _build_additional_view(original_path: str, letter: str | None, mapping: dict[str, int] | None = None):
+    mapping = mapping or ACTION_LETTERS
+    if letter is None or letter not in mapping:
         return None
-    idx = ACTION_LETTERS[letter]
+    idx = mapping[letter]
     base_dir = os.path.dirname(original_path)
     candidate = os.path.join(base_dir, f"view_{idx:02d}.png")
     return candidate if os.path.exists(candidate) else None
@@ -1072,6 +1073,20 @@ def _extract_question(problem_text: str):
     question_part = re.sub(r'(?:\\n)+$', '', question_part)  # remove one or more literal \n at end
     question_part = question_part.rstrip('\\').strip().strip('"').strip()
     return question_part
+
+def _question_side(question: str):
+    if not question:
+        return None
+    q = question.lower()
+    if re.search(r"\bleft\b", q):
+        return 'left'
+    if re.search(r"\bright\b", q):
+        return 'right'
+    if any(tok in q for tok in ['왼쪽', '좌측', '왼 편', '왼', '좌']):
+        return 'left'
+    if any(tok in q for tok in ['오른쪽', '우측', '오른 편', '오른', '우']):
+        return 'right'
+    return None
 
 @torch.no_grad()
 def _verifier_answer(images: list[str], question: str):
@@ -1132,14 +1147,37 @@ def action_accuracy_reward(completions, solution, **kwargs):
             continue
         primary_img = orig_imgs[0]
         letter = _extract_final_answer_letter(content)
-        add_view = _build_additional_view(primary_img, letter)
-        selected_images = [primary_img] + ([add_view] if add_view else [])
-        # 질문 추출
+        # Build dynamic mapping using question side + optional gt_action from dataset item (if present)
+        # Expect gt_action could be provided via kwargs per-item in a list under key 'gt_action'
         if isinstance(problems_arg, list) and len(problems_arg) == len(contents):
             raw_problem = problems_arg[i]
         else:
             raw_problem = problems_arg[0] if problems_arg else ''
         question = _extract_question(raw_problem)
+        side = _question_side(question)
+        mapping = ACTION_LETTERS
+        gt_actions_arg = kwargs.get('gt_action')
+        gt_action_item = None
+        if isinstance(gt_actions_arg, list) and len(gt_actions_arg) == len(contents):
+            gt_action_item = gt_actions_arg[i]
+        elif isinstance(gt_actions_arg, list) and len(gt_actions_arg) > 0:
+            gt_action_item = gt_actions_arg[0]
+        if isinstance(gt_action_item, str):
+            ga = gt_action_item.strip().upper()
+            if ga in ('A', 'B') and side in ('left', 'right'):
+                if (side == 'left' and ga == 'B') or (side == 'right' and ga == 'A'):
+                    mapping = {'A': 2, 'B': 1}
+        # Debug mapping selection
+        try:
+            if mapping is ACTION_LETTERS:
+                map_note = 'normal'
+            else:
+                map_note = 'inverted'
+            print(f"[action_accuracy][map] side={side} gt_action={gt_action_item} mapping={map_note}")
+        except Exception:
+            pass
+        add_view = _build_additional_view(primary_img, letter, mapping)
+        selected_images = [primary_img] + ([add_view] if add_view else [])
         verifier_ans = _verifier_answer(selected_images, question)
         if verifier_ans is None:
             reward = 0.0
@@ -1235,17 +1273,24 @@ def main(script_args, training_args, model_args):
                 item = json.loads(line)
                 if 'image' in item:
                     if isinstance(item['image'], str):
-                        # Store image path instead of loading the image
-                        item['image_path'] = [os.path.join(image_folder, item['image'])]
+                        # If path is absolute, keep as-is; otherwise join with folder
+                        img_path = item['image'] if os.path.isabs(item['image']) else os.path.join(image_folder, item['image'])
+                        item['image_path'] = [img_path]
                         del item['image'] # remove the image column so that it can be loaded later
                     elif isinstance(item['image'], list):
                         # if the image is a list, then it is a list of images (for multi-image input)
-                        item['image_path'] = [os.path.join(image_folder, image) for image in item['image']]
+                        paths = []
+                        for image in item['image']:
+                            paths.append(image if os.path.isabs(image) else os.path.join(image_folder, image))
+                        item['image_path'] = paths
                         del item['image'] # remove the image column so that it can be loaded later
                     else:
                         raise ValueError(f"Unsupported image type: {type(item['image'])}")
                 # Remove immediate image loading
                 item['problem'] = item['conversations'][0]['value'].replace('<image>', '')
+                # Pass through optional gt_action for verifier mapping only
+                if 'gt_action' in item and isinstance(item['gt_action'], str):
+                    item['gt_action'] = item['gt_action'].strip().upper()
                 
                 # Handle solution that could be a float or string
                 solution_value = item['conversations'][1]['value']
@@ -1268,6 +1313,7 @@ def main(script_args, training_args, model_args):
             return {
                 'image_path': [p for p in example['image_path']],  # Store path instead of loaded image
                 'problem': example['problem'],
+                'gt_action': example.get('gt_action'),
                 'solution': f"<answer> {example['solution']} </answer>",
                 'accu_reward_method': example['accu_reward_method'],
                 'prompt': [{
@@ -1281,6 +1327,7 @@ def main(script_args, training_args, model_args):
         else:
             return {
                 'problem': example['problem'],
+                'gt_action': example.get('gt_action'),
                 'solution': f"<answer> {example['solution']} </answer>",
                 'accu_reward_method': example['accu_reward_method'],
                 'prompt': [{

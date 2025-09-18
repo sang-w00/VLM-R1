@@ -11,8 +11,17 @@ from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, Aut
 # We reuse logic from grpo_jsonl without importing the whole training script to avoid side effects
 # If project structure changes, consider refactoring shared utilities into a separate module.
 
-ACTION_LETTERS = {chr(ord('A') + i): i + 1 for i in range(11)}  # A-K -> 1..11
-ACTION_LETTERS['L'] = 0  # L means no rotation / no extra view
+# NOTE: Action space updated to align with grpo_jsonl A/B setup.
+# Historically this script supported A-K plus L (no rotation). The GRPO code
+# reduced actions to only A/B (mapping to view_01 / view_02) and treats any
+# other output as 'no extra view'. We keep 'L' as a fallback representing
+# "no additional view" for backward compatibility with downstream logic that
+# expects a letter, but the generation & extraction now only allow A or B.
+ACTION_LETTERS = {
+    'A': 1,  # view_01.png
+    'B': 2,  # view_02.png
+    'L': 0,  # no extra view / invalid fallback
+}
 
 ALIAS_MAP = {
     "qwen2.5vl:3b": "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -27,34 +36,64 @@ def resolve_model_path(raw: str) -> str:
     return ALIAS_MAP.get(raw.strip().lower(), raw)
 
 def extract_final_answer_letter(text: str) -> str:
-    """Replicates training logic: only trust the last <answer> block and return a single A-L letter.
+    """Extract the final action letter (A or B) from the model output.
 
-    Rules:
-      - If no <answer> tag: return 'L'
-      - Take last <answer> content, strip; allow one trailing '.' (e.g., 'A.')
-      - If (uppercased, after stripping trailing '.') is exactly one char in A-L -> return that uppercase letter
-      - Otherwise return 'L'
+    Updated to mirror the newer GRPO (grpo_jsonl) logic which restricts the
+    action space to only two choices (A/B). Any deviation (missing <answer>
+    tag, multi-character string, letter outside A/B) results in fallback 'L'
+    meaning "no valid extra view".
+
+    Parsing rules:
+      - Find all <answer>...</answer> blocks (case-insensitive); take the last.
+      - Trim whitespace; allow a single trailing period.
+      - Uppercase; if exactly 'A' or 'B' -> return it.
+      - Else return 'L'.
     """
     blocks = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
     if not blocks:
         return 'L'
     candidate_raw = blocks[-1].strip()
+    # Allow one trailing period (e.g., "A.")
     if candidate_raw.endswith('.') and candidate_raw.count('.') == 1:
         candidate_core = candidate_raw[:-1].strip()
     else:
         candidate_core = candidate_raw
-    candidate_up = candidate_core.upper()
-    if re.fullmatch(r'[A-L]', candidate_up):
-        return candidate_up
-    return 'L'
+    letter = candidate_core.upper()
+    return letter if letter in ('A', 'B') and len(letter) == 1 else 'L'
 
-def build_additional_view(primary_path: str, letter: str) -> Optional[str]:
-    if letter not in ACTION_LETTERS or letter == 'L':
+def build_additional_view(primary_path: str, letter: str, mapping: Optional[Dict[str, int]] = None) -> Optional[str]:
+    """Return additional view path based on action letter and mapping.
+
+    mapping: optional override for {'A':1, 'B':2, 'L':0} to support dynamic
+             left/right-dependent behavior.
+    """
+    mapping = mapping or ACTION_LETTERS
+    if letter not in mapping or letter == 'L':
         return None
-    idx = ACTION_LETTERS[letter]
+    idx = mapping[letter]
     base_dir = os.path.dirname(primary_path)
     candidate = os.path.join(base_dir, f"view_{idx:02d}.png")
     return candidate if os.path.exists(candidate) else None
+
+def _question_side(question: str) -> Optional[str]:
+    """Detect whether the question asks about left or right.
+
+    Returns 'left', 'right', or None if unclear. Supports English and Korean keywords.
+    """
+    if not question:
+        return None
+    q = question.lower()
+    # English
+    if re.search(r"\bleft\b", q):
+        return 'left'
+    if re.search(r"\bright\b", q):
+        return 'right'
+    # Korean (simple heuristics)
+    if any(tok in q for tok in ['왼쪽', '좌측', '왼 편', '왼', '좌']):
+        return 'left'
+    if any(tok in q for tok in ['오른쪽', '우측', '오른 편', '오른', '우']):
+        return 'right'
+    return None
 
 def default_accuracy_reward(pred: str, gt: str) -> float:
     # Mirror simplified logic: extract <answer> blocks; fallback to raw
@@ -122,12 +161,27 @@ def verifier_answer(image_paths: List[str], question: str, verifier_model_path: 
 
 @torch.no_grad()
 def generate_model_answer(model, processor, image_paths: List[str], question: str, max_new_tokens: int = 128) -> str:
+    """Generate a model answer constrained to A/B actions.
+
+    Instruction aligns with updated two-action policy:
+      1. Produce internal reasoning inside <think>...</think>.
+      2. Produce final action inside <answer>...</answer> with EXACTLY one
+         uppercase letter: A or B.
+      3. No trailing punctuation or extra text after </answer>.
+      4. If uncertain, pick the best of A or B.
+    """
     pil_images = [Image.open(p).convert('RGB') for p in image_paths]
+    instruction = (
+        f"{question} First output the thinking process in <think> </think> tags and then output the final answer "
+        f"in <answer> </answer> tags. The text between <answer> and </answer> must be exactly one uppercase letter "
+        f"A or B. No spaces, words, punctuation, or additional characters are allowed. If uncertain, choose the best "
+        f"single letter (A or B). Do not output anything after </answer>."
+    )
     messages = [{
         "role": "user",
         "content": [
             *[{"type": "image", "image": img} for img in pil_images],
-            {"type": "text", "text": f"{question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. The text between <answer> and </answer> must be exactly one uppercase letter from A to L (A|B|C|D|E|F|G|H|I|J|K|L). No spaces, words, punctuation, or additional characters are allowed. If uncertain, choose the best single letter. Do not output anything after </answer>."}
+            {"type": "text", "text": instruction}
         ]
     }]
     chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -187,12 +241,17 @@ def load_test_questions(path: str) -> List[Dict[str, Any]]:
                     mscene = re.search(r'scene_(\d+)', image_path)
                     if mscene:
                         scene_index = int(mscene.group(1))
+                # Optional ground-truth action (e.g., 'A' or 'B') for evaluation-only mode
+                gt_action = obj.get('gt_action')
+                gt_action = gt_action.strip().upper() if isinstance(gt_action, str) else None
+
                 entries.append({
                     'scene_index': scene_index if isinstance(scene_index, int) else int(scene_index) if str(scene_index).isdigit() else len(entries),
                     'question': question_text,
                     'answer': answer_text,
                     'image': image_path,
                     'raw_prompt': raw_prompt,
+                    'gt_action': gt_action,
                 })
         return entries
     # Fallback original JSON logic
@@ -233,22 +292,28 @@ class ResultEntry:
         }
 
 def run(args):
-    model_path = resolve_model_path(args.model_path)
-    print(f"Loading model: {model_path}")
-    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    # Choose loader (vision2seq vs causal) heuristically
-    if any(tag in model_path.lower() for tag in ['2.5-vl', '2_5-vl', '2.5_vl', '2_5_vl', 'qwen2.5-vl', 'qwen2.5']):
-        ModelCls = AutoModelForVision2Seq
+    # When using GT actions only, we can avoid loading the action model entirely.
+    if args.use_gt_action:
+        model = None
+        processor = None
+        print("Using ground-truth actions: skipping action model loading and inference.")
     else:
-        # fallback (may adjust if project has specific class)
-        ModelCls = AutoModelForVision2Seq
-    model = ModelCls.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto",
-        trust_remote_code=True,
-    )
-    model.eval()
+        model_path = resolve_model_path(args.model_path)
+        print(f"Loading model: {model_path}")
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        # Choose loader (vision2seq vs causal) heuristically
+        if any(tag in model_path.lower() for tag in ['2.5-vl', '2_5-vl', '2.5_vl', '2_5_vl', 'qwen2.5-vl', 'qwen2.5']):
+            ModelCls = AutoModelForVision2Seq
+        else:
+            # fallback (may adjust if project has specific class)
+            ModelCls = AutoModelForVision2Seq
+        model = ModelCls.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        model.eval()
     questions = load_test_questions(args.questions_file)
     total_loaded = len(questions)
     if args.limit is not None and args.limit > 0:
@@ -273,12 +338,39 @@ def run(args):
             print(f"[warn] image not found for scene {scene_index}: {primary_img}")
             continue
 
-        # 1. Generate model output on primary view only using full raw prompt (includes instruction/options)
-        model_output = generate_model_answer(model, processor, [primary_img], raw_prompt, max_new_tokens=args.max_new_tokens)
+        if args.use_gt_action:
+            # Skip model inference; use provided GT action if available.
+            action_letter = (q.get('gt_action') or 'L') if isinstance(q, dict) else q.get('gt_action', 'L')
+            if action_letter is None:
+                action_letter = 'L'
+            action_letter = action_letter.strip().upper() if isinstance(action_letter, str) else 'L'
+            if action_letter not in ('A', 'B'):
+                action_letter = 'L'
+            model_output = f"<think></think><answer>{action_letter}</answer>"
+            # Determine side from question and set mapping accordingly
+            side = _question_side(question_text)
+            # Default mapping
+            mapping = ACTION_LETTERS
+            # Invert mapping when (left,B) or (right,A)
+            if (side == 'left' and action_letter == 'B') or (side == 'right' and action_letter == 'A'):
+                mapping = {'A': 2, 'B': 1, 'L': 0}
+        else:
+            # 1. Generate model output on primary view only using full raw prompt (includes instruction/options)
+            model_output = generate_model_answer(model, processor, [primary_img], raw_prompt, max_new_tokens=args.max_new_tokens)
+            # 2. Extract action from model output
+            action_letter = extract_final_answer_letter(model_output)
+            # 3. Build dynamic mapping based on question side + GT action (if provided)
+            side = _question_side(question_text)
+            mapping = ACTION_LETTERS
+            gt_action_for_mapping = q.get('gt_action') if isinstance(q, dict) else None
+            if isinstance(gt_action_for_mapping, str):
+                ga = gt_action_for_mapping.strip().upper()
+                if ga in ('A', 'B') and side in ('left', 'right'):
+                    if (side == 'left' and ga == 'B') or (side == 'right' and ga == 'A'):
+                        mapping = {'A': 2, 'B': 1, 'L': 0}
 
-        # 2. Extract action and build additional view (not fed back to model, only for verifier)
-        action_letter = extract_final_answer_letter(model_output)
-        add_view = build_additional_view(primary_img, action_letter)
+        # Build additional view (not fed back to model, only for verifier)
+        add_view = build_additional_view(primary_img, action_letter, mapping)
         selected_for_verifier = [primary_img] + ([add_view] if add_view else [])
 
         # 3. Verifier inference uses only the concise question
@@ -336,7 +428,7 @@ def run(args):
 
 def build_arg_parser():
     p = argparse.ArgumentParser(description="Test action accuracy with verifier (expects JSONL with explicit image paths)")
-    p.add_argument('--model-path', type=str, required=True)
+    p.add_argument('--model-path', type=str, required=False, help='Required unless --use-gt-action is set')
     p.add_argument('--questions-file', type=str, required=True, help='JSONL file: each line must include an image path')
     p.add_argument('--output-file', type=str, required=True, help='JSONL output path')
     p.add_argument('--csv-file', type=str, default=None, help='Optional CSV output')
@@ -344,6 +436,7 @@ def build_arg_parser():
     p.add_argument('--max-new-tokens', type=int, default=128)
     p.add_argument('--limit', type=int, default=None, help='Process at most N questions (subset)')
     p.add_argument('--verbose', action='store_true')
+    p.add_argument('--use-gt-action', action='store_true', help='Use ground-truth action from JSONL and skip action model inference')
     return p
 
 if __name__ == '__main__':
