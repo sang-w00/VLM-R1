@@ -191,6 +191,14 @@ class GRPOScriptArguments(ScriptArguments):
         metadata={"help": "Whether to use a customized reward from vlm module"},
     )
 
+    action_mapping: str = field(
+        default='ab',
+        metadata={
+            "help": "Mapping of action letters to views (Left-Right order) (default: ab)",
+            "choices": ['ab', 'ba'],
+        },
+    )
+
 def extract_choice(text):
     # 1. Clean and normalize text
     text = text.upper()  # Convert to uppercase
