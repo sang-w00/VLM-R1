@@ -173,7 +173,6 @@ cython_debug/
 # Temp folders
 data/
 wandb/
-scripts/
 checkpoints/
 .vscode/
 .cursor/
