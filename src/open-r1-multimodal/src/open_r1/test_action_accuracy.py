@@ -35,6 +35,71 @@ ALIAS_MAP = {
 def resolve_model_path(raw: str) -> str:
     return ALIAS_MAP.get(raw.strip().lower(), raw)
 
+
+def swap_gt_action_letter(letter: Optional[str]) -> Optional[str]:
+    """Swap A <-> B for ground-truth action; keep others as-is.
+
+    Examples:
+      'A' -> 'B'
+      'B' -> 'A'
+      'L' or None -> same (used only as fallback)
+    """
+    if not isinstance(letter, str):
+        return letter
+    l = letter.strip().upper()
+    if l == 'A':
+        return 'B'
+    if l == 'B':
+        return 'A'
+    return letter
+
+
+def swap_choices_in_prompt(prompt: str) -> str:
+    """Swap the textual descriptions of choices A and B inside the Actions section.
+
+    This targets prompts like:
+      "Actions: A. <descA> B. <descB> The question is as follow: ..."
+
+    We preserve everything outside the Actions block. If the regex fails, we fall
+    back to a conservative heuristic swapping by labels.
+    """
+    if not isinstance(prompt, str):
+        return prompt
+    text = prompt
+    # Try to isolate Actions block up to the next "The question is" or end of string
+    m = re.search(r"(Actions:\s*)(A\.)\s*(.*?)(\s*)(B\.)\s*(.*?)(?=(The question is|$))",
+                  text, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        prefix_actions = m.group(1)
+        a_label = m.group(2)  # 'A.'
+        a_desc = m.group(3)
+        spacer = m.group(4)   # whitespace between A and B parts
+        b_label = m.group(5)  # 'B.'
+        b_desc = m.group(6)
+        tail_anchor = text[m.end():]  # from anchor to end
+        swapped_block = f"{prefix_actions}{a_label} {b_desc} {spacer}{b_label} {a_desc}"
+        return text[:m.start()] + swapped_block + tail_anchor
+
+    # Fallback: swap lines starting with "A." and "B." after 'Actions:'
+    parts = re.split(r"(Actions:)", text, flags=re.IGNORECASE)
+    if len(parts) >= 3:
+        head = ''.join(parts[:-1])  # everything up to the last split
+        after_actions = parts[-1]
+        # Find first occurrences of A. and B. in the after_actions segment
+        ma = re.search(r"A\.\s*([\s\S]*?)\s*(?=B\.|$)", after_actions)
+        mb = re.search(r"B\.\s*([\s\S]*?)(?=(The question is|$))", after_actions, flags=re.IGNORECASE)
+        if ma and mb:
+            a_desc = ma.group(1)
+            b_desc = mb.group(1)
+            # Reconstruct conservatively
+            before_a = after_actions[:ma.start()]
+            after_b_end = mb.end()
+            tail = after_actions[after_b_end:]
+            swapped = f"{before_a}A. {b_desc} B. {a_desc}{tail}"
+            return head + swapped
+    # If nothing matched, return original prompt unchanged
+    return text
+
 def extract_final_answer_letter(text: str) -> str:
     """Extract the final action letter (A or B) from the model output.
 
@@ -277,6 +342,9 @@ class ResultEntry:
     verifier_answer: Optional[str]
     verifier_question: Optional[str]
     reward: float
+    # Circular-eval metadata
+    variant: str = "orig"  # 'orig' or 'swapped'
+    circular_group: Optional[int] = None
 
     def to_dict(self):
         return {
@@ -289,6 +357,8 @@ class ResultEntry:
             'verifier_answer': self.verifier_answer,
             'verifier_question': self.verifier_question,
             'reward': self.reward,
+            'variant': self.variant,
+            'circular_group': self.circular_group,
         }
 
 def run(args):
@@ -323,12 +393,65 @@ def run(args):
         print(f"Loaded {total_loaded} questions")
 
     results: List[ResultEntry] = []
+    circular_pairs_total = 0
+    circular_pairs_correct = 0
+
+    def evaluate_variant(primary_img: str, question_text: str, raw_prompt_text: str, gt_action_letter: Optional[str], answer_gt_text: str, variant_name: str, group_id: Optional[int]) -> Tuple[ResultEntry, float]:
+        """Evaluate one variant (original or swapped) and return (ResultEntry, reward)."""
+        nonlocal processor, model
+        # Decide action letter: model inference or GT action
+        if args.use_gt_action:
+            action_letter = (gt_action_letter or 'L')
+            if action_letter is None:
+                action_letter = 'L'
+            action_letter = action_letter.strip().upper() if isinstance(action_letter, str) else 'L'
+            if action_letter not in ('A', 'B'):
+                action_letter = 'L'
+            model_output = f"<think></think><answer>{action_letter}</answer>"
+            side = _question_side(question_text)
+            mapping = ACTION_LETTERS
+            if (side == 'left' and action_letter == 'B') or (side == 'right' and action_letter == 'A'):
+                mapping = {'A': 2, 'B': 1, 'L': 0}
+        else:
+            model_output = generate_model_answer(model, processor, [primary_img], raw_prompt_text, max_new_tokens=args.max_new_tokens)
+            action_letter = extract_final_answer_letter(model_output)
+            side = _question_side(question_text)
+            mapping = ACTION_LETTERS
+            ga = gt_action_letter.strip().upper() if isinstance(gt_action_letter, str) else None
+            if isinstance(ga, str) and ga in ('A', 'B') and side in ('left', 'right'):
+                if (side == 'left' and ga == 'B') or (side == 'right' and ga == 'A'):
+                    mapping = {'A': 2, 'B': 1, 'L': 0}
+
+        add_view = build_additional_view(primary_img, action_letter, mapping)
+        selected_for_verifier = [primary_img] + ([add_view] if add_view else [])
+        verifier_question = question_text
+        verifier_ans, _ = verifier_answer(selected_for_verifier, verifier_question, args.verifier_model_path)
+        if verifier_ans is None:
+            reward = 0.0
+        else:
+            reward = default_accuracy_reward(f"<answer>{verifier_ans}</answer>", f"<answer>{answer_gt_text}</answer>")
+        entry = ResultEntry(
+            scene_index=int(scene_index),
+            question=question_text,
+            answer_gt=answer_gt_text,
+            model_output=model_output,
+            action_letter=action_letter,
+            selected_images=selected_for_verifier,
+            verifier_answer=verifier_ans,
+            verifier_question=verifier_question,
+            reward=reward,
+            variant=variant_name,
+            circular_group=group_id,
+        )
+        return entry, reward
 
     for q in questions:
         # Normalized entries from JSONL loader expected (must contain image path)
         scene_index = q.get('scene_index') if isinstance(q, dict) else q['scene_index']
         question_text = q.get('question') if isinstance(q, dict) else q['question']  # extracted concise question for verifier
         gt_answer = q.get('answer') or q.get('answer_gt') or q.get('gt')
+        if gt_answer is None:
+            gt_answer = ""
         primary_img = q.get('image') if isinstance(q, dict) else q['image']
         raw_prompt = q.get('raw_prompt', question_text)
         if not primary_img:
@@ -338,83 +461,58 @@ def run(args):
             print(f"[warn] image not found for scene {scene_index}: {primary_img}")
             continue
 
-        if args.use_gt_action:
-            # Skip model inference; use provided GT action if available.
-            action_letter = (q.get('gt_action') or 'L') if isinstance(q, dict) else q.get('gt_action', 'L')
-            if action_letter is None:
-                action_letter = 'L'
-            action_letter = action_letter.strip().upper() if isinstance(action_letter, str) else 'L'
-            if action_letter not in ('A', 'B'):
-                action_letter = 'L'
-            model_output = f"<think></think><answer>{action_letter}</answer>"
-            # Determine side from question and set mapping accordingly
-            side = _question_side(question_text)
-            # Default mapping
-            mapping = ACTION_LETTERS
-            # Invert mapping when (left,B) or (right,A)
-            if (side == 'left' and action_letter == 'B') or (side == 'right' and action_letter == 'A'):
-                mapping = {'A': 2, 'B': 1, 'L': 0}
+        # Circular evaluation: evaluate original + swapped choices; count as correct only if both are correct.
+        if args.circular_eval:
+            circular_pairs_total += 1
+            gt_action_letter = (q.get('gt_action') if isinstance(q, dict) else None)
+            # original variant
+            entry_orig, reward_orig = evaluate_variant(primary_img, question_text, raw_prompt, gt_action_letter, gt_answer, 'orig', int(scene_index))
+            results.append(entry_orig)
+            if args.verbose:
+                print(f"[test][orig] scene={scene_index} action={entry_orig.action_letter} reward={reward_orig:.3f} gt_action={gt_action_letter}")
+            # swapped variant: swap the Actions text and flip gt_action
+            swapped_prompt = swap_choices_in_prompt(raw_prompt or '')
+            swapped_gt = swap_gt_action_letter(gt_action_letter)
+            entry_swap, reward_swap = evaluate_variant(primary_img, question_text, swapped_prompt, swapped_gt, gt_answer, 'swapped', int(scene_index))
+            results.append(entry_swap)
+            if args.verbose:
+                print(f"[test][swap] scene={scene_index} action={entry_swap.action_letter} reward={reward_swap:.3f} gt_action={swapped_gt}")
+
+            if (reward_orig >= 1.0) and (reward_swap >= 1.0):
+                circular_pairs_correct += 1
         else:
-            # 1. Generate model output on primary view only using full raw prompt (includes instruction/options)
-            model_output = generate_model_answer(model, processor, [primary_img], raw_prompt, max_new_tokens=args.max_new_tokens)
-            # 2. Extract action from model output
-            action_letter = extract_final_answer_letter(model_output)
-            # 3. Build dynamic mapping based on question side + GT action (if provided)
-            side = _question_side(question_text)
-            mapping = ACTION_LETTERS
+            # Legacy single-variant evaluation
             gt_action_for_mapping = q.get('gt_action') if isinstance(q, dict) else None
-            if isinstance(gt_action_for_mapping, str):
-                ga = gt_action_for_mapping.strip().upper()
-                if ga in ('A', 'B') and side in ('left', 'right'):
-                    if (side == 'left' and ga == 'B') or (side == 'right' and ga == 'A'):
-                        mapping = {'A': 2, 'B': 1, 'L': 0}
-
-        # Build additional view (not fed back to model, only for verifier)
-        add_view = build_additional_view(primary_img, action_letter, mapping)
-        selected_for_verifier = [primary_img] + ([add_view] if add_view else [])
-
-        # 3. Verifier inference uses only the concise question
-        verifier_question = question_text
-        verifier_ans, _verifier_raw = verifier_answer(selected_for_verifier, verifier_question, args.verifier_model_path)
-
-        # 4. Reward using verifier answer vs ground truth (mirrors training logic)
-        if verifier_ans is None:
-            reward = 0.0
-        else:
-            reward = default_accuracy_reward(f"<answer>{verifier_ans}</answer>", f"<answer>{gt_answer}</answer>")
-
-        entry = ResultEntry(
-            scene_index=int(scene_index),
-            question=question_text,
-            answer_gt=gt_answer,
-            model_output=model_output,
-            action_letter=action_letter,
-            selected_images=selected_for_verifier,
-            verifier_answer=verifier_ans,
-            verifier_question=verifier_question,
-            reward=reward,
-        )
-        results.append(entry)
-        if args.verbose:
-            print(f"[test] scene={scene_index} action={action_letter} reward={reward:.3f} verifier_q='{verifier_question}' verifier_ans='{verifier_ans}' gt='{gt_answer}'")
+            entry_single, reward_single = evaluate_variant(primary_img, question_text, raw_prompt, gt_action_for_mapping, gt_answer, 'orig', int(scene_index))
+            results.append(entry_single)
+            if args.verbose:
+                print(f"[test] scene={scene_index} action={entry_single.action_letter} reward={reward_single:.3f} gt_action={gt_action_for_mapping}")
 
     # Save
-    os.makedirs(os.path.dirname(args.output_file), exist_ok=True)
+    out_dir = os.path.dirname(args.output_file) or "."
+    os.makedirs(out_dir, exist_ok=True)
     with open(args.output_file, 'w', encoding='utf-8') as f:
         for r in results:
             f.write(json.dumps(r.to_dict(), ensure_ascii=False) + '\n')
     print(f"Saved {len(results)} results to {args.output_file}")
 
     # Final accuracy
-    if results:
-        mean_acc = sum(r.reward for r in results) / len(results)
-        print(f"Final accuracy: {mean_acc:.4f} ({sum(r.reward for r in results)}/{len(results)})")
+    if args.circular_eval:
+        if circular_pairs_total > 0:
+            print(f"Circular accuracy: {circular_pairs_correct / circular_pairs_total:.4f} ({circular_pairs_correct}/{circular_pairs_total})")
+        else:
+            print("Circular accuracy: N/A (no pairs evaluated)")
     else:
-        print("No results to compute accuracy.")
+        if results:
+            mean_acc = sum(r.reward for r in results) / len(results)
+            print(f"Final accuracy: {mean_acc:.4f} ({sum(r.reward for r in results)}/{len(results)})")
+        else:
+            print("No results to compute accuracy.")
 
     if args.csv_file:
         import csv
-        os.makedirs(os.path.dirname(args.csv_file), exist_ok=True)
+        csv_dir = os.path.dirname(args.csv_file) or "."
+        os.makedirs(csv_dir, exist_ok=True)
         with open(args.csv_file, 'w', newline='', encoding='utf-8') as cf:
             fieldnames = list(results[0].to_dict().keys()) if results else [
                 'scene_index','question','answer_gt','model_output','action_letter','selected_images','verifier_question','verifier_answer','reward'
@@ -437,6 +535,7 @@ def build_arg_parser():
     p.add_argument('--limit', type=int, default=None, help='Process at most N questions (subset)')
     p.add_argument('--verbose', action='store_true')
     p.add_argument('--use-gt-action', action='store_true', help='Use ground-truth action from JSONL and skip action model inference')
+    p.add_argument('--circular-eval', action='store_true', help='Evaluate each question with original and swapped A/B choices; count correct only if both are correct')
     return p
 
 if __name__ == '__main__':
