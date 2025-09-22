@@ -69,6 +69,16 @@ ALIAS_MAP = {
     "qwen2.5_vl:7b": "Qwen/Qwen2.5-VL-7B-Instruct",
 }
 
+# ---------------- New Reward: action-based verification accuracy ---------------- #
+# (UPDATED) 선택지는 이제 A 또는 B 두 개만 사용.
+# 기존 A-L 매핑에서 축소: A -> view_01, B -> view_02 로 해석.
+# 추가 뷰가 필요 없는(이전의 'L') 개념은 더 이상 사용하지 않고, 잘못된/미존재 답은 추가 뷰 없이 진행.
+ACTION_LETTERS = {
+    'A': 1,  # view_01.png
+    'B': 2,  # view_02.png
+}
+
+
 def resolve_model_path(raw_path: str) -> str:
     key = raw_path.strip().lower()
     return ALIAS_MAP.get(key, raw_path)
@@ -992,16 +1002,6 @@ def format_reward(completions, **kwargs):
 
     return rewards
 
-
-# ---------------- New Reward: action-based verification accuracy ---------------- #
-# (UPDATED) 선택지는 이제 A 또는 B 두 개만 사용.
-# 기존 A-L 매핑에서 축소: A -> view_01, B -> view_02 로 해석.
-# 추가 뷰가 필요 없는(이전의 'L') 개념은 더 이상 사용하지 않고, 잘못된/미존재 답은 추가 뷰 없이 진행.
-ACTION_LETTERS = {
-    'A': 1,  # view_01.png
-    'B': 2,  # view_02.png
-}
-
 def _view_index_from_path(path: str):
     m = re.search(r'view_(\d{2})', path)
     return int(m.group(1)) if m else None
@@ -1162,11 +1162,6 @@ def action_accuracy_reward(completions, solution, **kwargs):
             gt_action_item = gt_actions_arg[i]
         elif isinstance(gt_actions_arg, list) and len(gt_actions_arg) > 0:
             gt_action_item = gt_actions_arg[0]
-        if isinstance(gt_action_item, str):
-            ga = gt_action_item.strip().upper()
-            if ga in ('A', 'B') and side in ('left', 'right'):
-                if (side == 'left' and ga == 'B') or (side == 'right' and ga == 'A'):
-                    mapping = {'A': 2, 'B': 1}
         # Debug mapping selection
         try:
             if mapping is ACTION_LETTERS:
@@ -1256,6 +1251,11 @@ def main(script_args, training_args, model_args):
     if len(data_files) != len(image_folders):
         raise ValueError("Number of data files must match number of image folders")
     
+    if script_args.action_mapping == 'ba':
+        ACTION_LETTERS.update({'A': 2, 'B': 1})  # A=left, B=right
+    elif script_args.action_mapping == 'ab':
+        ACTION_LETTERS.update({'A': 1, 'B': 2})  # A=left, B=right
+
     if script_args.reward_method is None:
         accu_reward_methods = ["default"] * len(data_files)
     else:

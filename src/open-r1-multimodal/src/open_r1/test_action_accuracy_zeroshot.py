@@ -114,7 +114,8 @@ def extract_final_answer_letter(text: str) -> str:
       - Uppercase; if exactly 'A' or 'B' -> return it.
       - Else return 'L'.
     """
-    blocks = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
+    # blocks = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
+    blocks = re.findall(r'(?s)assistant\n(.*)$', text, re.DOTALL | re.IGNORECASE)  # DOTALL: (?s)
     if not blocks:
         return 'L'
     candidate_raw = blocks[-1].strip()
@@ -236,13 +237,8 @@ def generate_model_answer(model, processor, image_paths: List[str], question: st
       4. If uncertain, pick the best of A or B.
     """
     pil_images = [Image.open(p).convert('RGB') for p in image_paths]
-    instruction = ( ### instruction for GRPO-trained model ###
-        f"{question} First output the thinking process in <think> </think> tags and then output the final answer "
-        f"in <answer> </answer> tags. The text between <answer> and </answer> must be exactly one uppercase letter "
-        f"A or B. No spaces, words, punctuation, or additional characters are allowed. If uncertain, choose the best "
-        f"single letter (A or B). Do not output anything after </answer>."
-    )
-    
+     ### TODO: instruction for Zero-shot model. ###
+    instruction = f"{question} Choose the best option and answer with a single character: A or B only."
     messages = [{
         "role": "user",
         "content": [
@@ -482,7 +478,6 @@ def run(args):
             gt_action_letter = (q.get('gt_action') if isinstance(q, dict) else None)
             # original variant
             entry_orig, reward_orig = evaluate_variant(primary_img, question_text, raw_prompt, gt_action_letter, gt_answer, 'orig', int(scene_index))
-            breakpoint()
             results.append(entry_orig)
             if args.verbose:
                 print(f"[test][orig] scene={scene_index} action={entry_orig.action_letter} reward={reward_orig:.3f} gt_action={gt_action_letter} answer={entry_orig.model_output.split('assistant')[-1]}")

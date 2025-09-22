@@ -348,3 +348,12 @@ class GRPOConfig(TrainingArguments):
             "installed, it prints the sample. If `wandb` logging is enabled, it logs it to `wandb`."
         },
     )
+
+
+    action_mapping: str = field(
+        default='ab',
+        metadata={
+            "help": "Mapping of action letters to views (Left-Right order) (default: ab)",
+            "choices": ['ab', 'ba'],
+        },
+    )
