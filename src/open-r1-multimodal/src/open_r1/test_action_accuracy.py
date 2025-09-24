@@ -7,7 +7,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from PIL import Image
 import torch
 from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, AutoModelForVision2Seq
-
+from open_r1.test_action_accuracy_zeroshot import ResultEntry
 # We reuse logic from grpo_jsonl without importing the whole training script to avoid side effects
 # If project structure changes, consider refactoring shared utilities into a separate module.
 
@@ -332,36 +332,6 @@ def load_test_questions(path: str) -> List[Dict[str, Any]]:
 
 # scenes_root support removed: images are now expected to be given explicitly in the JSONL input.
 
-@dataclass
-class ResultEntry:
-    scene_index: int
-    question: str
-    answer_gt: str
-    model_output: str  # full generation from the action-selection (trained) model (includes thinking)
-    action_letter: str
-    selected_images: List[str]
-    verifier_answer: Optional[str]
-    verifier_question: Optional[str]
-    reward: float
-    # Circular-eval metadata
-    variant: str = "orig"  # 'orig' or 'swapped'
-    circular_group: Optional[int] = None
-
-    def to_dict(self):
-        return {
-            'scene_index': self.scene_index,
-            'question': self.question,
-            'answer_gt': self.answer_gt,
-            'model_output': self.model_output,
-            'action_letter': self.action_letter,
-            'selected_images': self.selected_images,
-            'verifier_answer': self.verifier_answer,
-            'verifier_question': self.verifier_question,
-            'reward': self.reward,
-            'variant': self.variant,
-            'circular_group': self.circular_group,
-        }
-
 def run(args):
     # When using GT actions only, we can avoid loading the action model entirely.
     if args.action_mapping == 'ab':
@@ -408,12 +378,11 @@ def run(args):
     circular_pairs_total = 0
     circular_pairs_correct = 0
 
-    def evaluate_variant(primary_img: str, question_text: str, raw_prompt_text: str, gt_action_letter: Optional[str], answer_gt_text: str, variant_name: str, group_id: Optional[int]) -> Tuple[ResultEntry, float]:
+    def evaluate_variant(primary_img: str, question_text: str, raw_prompt_text: str, gt_action_letter: Optional[str], answer_gt_text: str, variant_name: str, group_id: Optional[int], use_tgt_only: Optional[bool]) -> Tuple[ResultEntry, float]:
         """Evaluate one variant (original or swapped) and return (ResultEntry, reward)."""
         nonlocal processor, model
         # Decide action letter: model inference or GT action
         if args.use_gt_action:
-            raise NotImplementedError
             action_letter = (gt_action_letter or 'L')
             if action_letter is None:
                 action_letter = 'L'
@@ -421,10 +390,7 @@ def run(args):
             if action_letter not in ('A', 'B'):
                 action_letter = 'L'
             model_output = f"<think></think><answer>{action_letter}</answer>"
-            side = _question_side(question_text)
             mapping = ACTION_LETTERS
-            if (side == 'left' and action_letter == 'B') or (side == 'right' and action_letter == 'A'):
-                mapping = {'A': 2, 'B': 1, 'L': 0}
         else:
             model_output = generate_model_answer(model, processor, [primary_img], raw_prompt_text, max_new_tokens=args.max_new_tokens)
             action_letter = extract_final_answer_letter(model_output)
@@ -438,9 +404,13 @@ def run(args):
             #         mapping = {'A': 2, 'B': 1, 'L': 0}
 
         add_view = build_additional_view(primary_img, action_letter, mapping)
-        selected_for_verifier = [primary_img] + ([add_view] if add_view else [])
+        if use_tgt_only:
+            selected_for_verifier = [add_view] if add_view else [primary_img]
+        else:
+            selected_for_verifier = [primary_img] + ([add_view] if add_view else [])
         verifier_question = question_text
         verifier_ans, _ = verifier_answer(selected_for_verifier, verifier_question, args.verifier_model_path)
+        print(f"verifier_ans: {verifier_ans}, gt: {answer_gt_text}")
         if verifier_ans is None:
             reward = 0.0
         else:
@@ -451,6 +421,7 @@ def run(args):
             answer_gt=answer_gt_text,
             model_output=model_output,
             action_letter=action_letter,
+            action_gt=gt_action_letter,
             selected_images=selected_for_verifier,
             verifier_answer=verifier_ans,
             verifier_question=verifier_question,
@@ -481,7 +452,7 @@ def run(args):
             circular_pairs_total += 1
             gt_action_letter = (q.get('gt_action') if isinstance(q, dict) else None)
             # original variant
-            entry_orig, reward_orig = evaluate_variant(primary_img, question_text, raw_prompt, gt_action_letter, gt_answer, 'orig', int(scene_index))
+            entry_orig, reward_orig = evaluate_variant(primary_img, question_text, raw_prompt, gt_action_letter, gt_answer, 'orig', int(scene_index), use_tgt_only=args.use_tgt_only)
             breakpoint()
             results.append(entry_orig)
             if args.verbose:
@@ -489,7 +460,7 @@ def run(args):
             # swapped variant: swap the Actions text and flip gt_action
             swapped_prompt = swap_choices_in_prompt(raw_prompt or '')
             swapped_gt = swap_gt_action_letter(gt_action_letter)
-            entry_swap, reward_swap = evaluate_variant(primary_img, question_text, swapped_prompt, swapped_gt, gt_answer, 'swapped', int(scene_index))
+            entry_swap, reward_swap = evaluate_variant(primary_img, question_text, swapped_prompt, swapped_gt, gt_answer, 'swapped', int(scene_index), use_tgt_only=args.use_tgt_only)
             results.append(entry_swap)
             if args.verbose:
                 print(f"[test][swap] scene={scene_index} action={entry_swap.action_letter} reward={reward_swap:.3f} gt_action={swapped_gt} answer={entry_orig.model_output.split('assistant')[-1]}")
@@ -499,7 +470,7 @@ def run(args):
         else:
             # Legacy single-variant evaluation
             gt_action_for_mapping = q.get('gt_action') if isinstance(q, dict) else None
-            entry_single, reward_single = evaluate_variant(primary_img, question_text, raw_prompt, gt_action_for_mapping, gt_answer, 'orig', int(scene_index))
+            entry_single, reward_single = evaluate_variant(primary_img, question_text, raw_prompt, gt_action_for_mapping, gt_answer, 'orig', int(scene_index), use_tgt_only=args.use_tgt_only)
             results.append(entry_single)
             if args.verbose:
                 print(f"[test] scene={scene_index} action={entry_single.action_letter} reward={reward_single:.3f} gt_action={gt_action_for_mapping}")
@@ -553,6 +524,7 @@ def build_arg_parser():
     p.add_argument('--verbose', action='store_true')
     p.add_argument('--use-gt-action', action='store_true', help='Use ground-truth action from JSONL and skip action model inference')
     p.add_argument('--circular-eval', action='store_true', help='Evaluate each question with original and swapped A/B choices; count correct only if both are correct')
+    p.add_argument('--use-tgt-only', action='store_true')
     return p
 
 if __name__ == '__main__':
