@@ -1161,8 +1161,8 @@ def action_accuracy_reward(completions, solution, **kwargs):
             raw_problem = problems_arg[i]
         else:
             raw_problem = problems_arg[0] if problems_arg else ''
+        # print(raw_problem)
         question = _extract_question(raw_problem)
-        side = _question_side(question)
         mapping = ACTION_LETTERS
         gt_actions_arg = kwargs.get('gt_action')
         gt_action_item = None
@@ -1176,7 +1176,7 @@ def action_accuracy_reward(completions, solution, **kwargs):
                 map_note = 'normal'
             else:
                 map_note = 'inverted'
-            print(f"[action_accuracy][map] side={side} gt_action={gt_action_item} mapping={map_note}")
+            # print(f"[action_accuracy][map] gt_action={gt_action_item} mapping={map_note}")
         except Exception:
             pass
         add_view = _build_additional_view(primary_img, letter, mapping)
@@ -1190,7 +1190,7 @@ def action_accuracy_reward(completions, solution, **kwargs):
         # Always log concise info each train step for debugging selected views
         try:
             sel_indices = [(_view_index_from_path(p)) for p in selected_images]
-            print(f"[action_accuracy][debug] sel_indices={sel_indices} question='{question[:80]}' verifier_ans='{verifier_ans}' gt='{sol[:80]}' reward={reward:.3f}")
+            print(f"[action_accuracy][debug] gt_action={gt_action_item} selected_action={letter} sel_indices={sel_indices} question='{question[:80]}' verifier_ans='{verifier_ans}' gt='{sol[:80]}' reward={reward:.3f}")
         except Exception:
             pass
         if os.getenv("DEBUG_MODE") == "true":
@@ -1208,12 +1208,37 @@ def action_accuracy_reward(completions, solution, **kwargs):
     return rewards
 
 
+def action_match_reward(completions, solution, **kwargs):
+    """학생 출력이 선택한 액션(A-B)이 정답 액션과 맞는지 검토.
+
+    Reward = default_accuracy_reward(verifier_answer, ground_truth)
+    - verifier 또는 이미지 로딩 실패 시 0.0 (보수적)
+    - 두 번째 뷰 파일이 없으면 단일 뷰로 진행
+    """
+    rewards = []
+    contents = [c[0]["content"] for c in completions]
+    # image_path: list[list[str]] 혹은 list[str]
+
+    for i, (content, sol) in enumerate(zip(contents, solution)):
+        letter = _extract_final_answer_letter(content)
+        gt_actions_arg = kwargs.get('gt_action')
+        gt_action_item = None
+        if isinstance(gt_actions_arg, list) and len(gt_actions_arg) == len(contents):
+            gt_action_item = gt_actions_arg[i]
+        elif isinstance(gt_actions_arg, list) and len(gt_actions_arg) > 0:
+            gt_action_item = gt_actions_arg[0]
+        reward = mcq_reward(letter, gt_action_item)
+        rewards.append(reward)
+    return rewards
+
+
 reward_funcs_registry = {
     "accuracy": accuracy_reward,
     "format": format_reward,
     "length": cosine_rewards,
     "repetition": repetition_rewards,
     "action_accuracy": action_accuracy_reward,
+    "action_match": action_match_reward
 }
 
 @dataclass
